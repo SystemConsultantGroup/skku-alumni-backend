@@ -3,7 +3,7 @@ spring:
     activate:
       on-profile: dev
   datasource:
-    url: jdbc:mysql://${DB_HOST:mysql-scg.scg.skku.ac.kr}:${DB_PORT:3306}/${DB_NAME:skku_alumni_dev}?connectionTimeZone=Asia/Seoul&forceConnectionTimeZoneToSession=true&characterEncoding=UTF-8
+    url: jdbc:mysql://${DB_HOST}:${DB_PORT}/${DB_NAME}?connectionTimeZone=Asia/Seoul&forceConnectionTimeZoneToSession=true&characterEncoding=UTF-8
     username: ${DB_USERNAME}
     password: ${DB_PASSWORD}
 
@@ -11,4 +11,4 @@ minio:
   endpoint: ${MINIO_ENDPOINT}
   access-key: ${MINIO_ACCESS_KEY}
   secret-key: ${MINIO_SECRET_KEY}
-  bucket: ${MINIO_BUCKET:skku-alumni-dev}
+  bucket: ${MINIO_BUCKET}
