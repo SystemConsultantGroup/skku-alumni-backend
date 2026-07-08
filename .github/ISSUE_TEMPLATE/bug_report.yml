@@ -1,0 +1,46 @@
+name: 🐞 Bug Report
+description: Report a bug in SKKU Alumni backend
+title: "🐞 [BUG] "
+labels: ["🐞 Bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: 📖 Description
+      description: 발생한 버그를 상세히 설명해주세요.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 🏗 Reproduction
+      description: 재현 절차와 관련 자료를 작성해주세요.
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 🪵 Logs
+      description: 관련 로그에서 비밀값과 개인정보를 제거한 뒤 첨부해주세요.
+      render: shell
+  - type: dropdown
+    id: environment
+    attributes:
+      label: 🖥 Environment
+      options:
+        - local
+        - dev
+        - prod
+    validations:
+      required: true
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: ✔️ Checklist
+      options:
+        - label: 같은 문제가 이미 등록되어 있는지 확인했습니다.
+          required: true
