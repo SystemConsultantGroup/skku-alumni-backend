@@ -3,7 +3,7 @@ spring:
     activate:
       on-profile: dev
   datasource:
-    url: jdbc:mysql://${DB_HOST:mysql-scg.scg.skku.ac.kr}:${DB_PORT:3306}/${DB_NAME:dev_skku_alumni}?connectionTimeZone=Asia/Seoul&forceConnectionTimeZoneToSession=true&characterEncoding=UTF-8
+    url: jdbc:mysql://${DB_HOST:mysql-scg.scg.skku.ac.kr}:${DB_PORT:3306}/${DB_NAME:skku_alumni_dev}?connectionTimeZone=Asia/Seoul&forceConnectionTimeZoneToSession=true&characterEncoding=UTF-8
     username: ${DB_USERNAME}
     password: ${DB_PASSWORD}
 

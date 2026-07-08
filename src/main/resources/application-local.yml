@@ -3,9 +3,9 @@ spring:
     activate:
       on-profile: local
   datasource:
-    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:skku_alumni}?connectionTimeZone=Asia/Seoul&forceConnectionTimeZoneToSession=true&characterEncoding=UTF-8
-    username: ${DB_USERNAME:alumni}
-    password: ${DB_PASSWORD:alumni}
+    url: jdbc:mysql://${DB_HOST:mysql-scg.scg.skku.ac.kr}:${DB_PORT:3306}/${DB_NAME:skku_alumni_dev}?connectionTimeZone=%2B09:00&forceConnectionTimeZoneToSession=true&characterEncoding=UTF-8
+    username: ${DB_USERNAME:scg_dev}
+    password: ${DB_PASSWORD:!@dnjrtlf*()}
   jpa:
     show-sql: true
     properties:

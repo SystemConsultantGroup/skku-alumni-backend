@@ -12,6 +12,10 @@ spring:
         default_batch_fetch_size: 100
   flyway:
     enabled: true
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
 
 server:
   port: ${SERVER_PORT:8000}
@@ -27,3 +31,12 @@ management:
     health:
       probes:
         enabled: true
+
+auth:
+  access-token-ttl: ${AUTH_ACCESS_TOKEN_TTL:2h}
+  refresh-token-ttl: ${AUTH_REFRESH_TOKEN_TTL:7d}
+  jwt-secret: ${AUTH_JWT_SECRET:local-development-secret-for-skku-alumni-auth-change-me}
+  member-access-cookie-name: member_access_token
+  member-refresh-cookie-name: member_refresh_token
+  admin-access-cookie-name: admin_access_token
+  admin-refresh-cookie-name: admin_refresh_token

@@ -72,6 +72,42 @@ V1__create_user_table.sql
 V2__add_user_status.sql
 ```
 
+현재 초기 구현은 다음 마이그레이션으로 시작합니다.
+
+```text
+V1__create_core_schema.sql
+V2__seed_core_data.sql
+V3__add_operational_features.sql
+```
+
+## 초기 API와 운영 API
+
+첫 구현 범위는 임원 주소록, 커뮤니티 피드, 사용자 운영 기능, 관리자 운영 기능입니다.
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/api/v1/members` | 현행 임기 회비 납부 임원만 조회합니다. `keyword`, `majorId`, `industryId`, `companyName`, `hobbyId`, `cursor`, `size`를 지원합니다. |
+| `GET` | `/api/v1/community/posts` | 공개 상태의 커뮤니티 게시글 피드를 커서 기반으로 조회합니다. `cursor`, `size`를 지원합니다. |
+| `GET` | `/api/v1/reference-data` | 학과, 산업, 취미, 임원 임기/직책 기준 데이터를 조회합니다. |
+| `GET/PATCH` | `/api/v1/me` | 샘플 로그인 사용자 기준 내정보 조회·수정과 ASIS 변경 로그 생성을 지원합니다. |
+| `POST` | `/api/v1/member-applications` | 임원 등록 신청을 접수합니다. |
+| `GET` | `/api/v1/payments/me` | 샘플 로그인 사용자 기준 회비 상태를 조회합니다. |
+| `GET` | `/api/v1/clubs` | 취미동호회와 발전연구회를 조회합니다. |
+| `GET` | `/api/v1/notices` | 공지/뉴스 글을 조회합니다. |
+| `GET` | `/api/v1/business-posts` | 비즈니스 글을 조회합니다. |
+| `POST` | `/api/v1/reports` | 게시글 신고를 접수합니다. |
+| `GET/POST/DELETE` | `/api/v1/blocked-users` | 차단 사용자 목록을 관리합니다. |
+| `GET` | `/api/v1/admin/dashboard` | 관리자 대시보드 통계를 조회합니다. |
+| `GET` | `/api/v1/admin/members` | 관리자 회원 목록을 조회합니다. |
+| `GET/PATCH` | `/api/v1/admin/applications` | 신규 신청 목록과 승인/반려 처리를 지원합니다. |
+| `GET/PATCH` | `/api/v1/admin/payments` | 회비 목록과 납부/미납 처리를 지원합니다. |
+| `GET/PATCH` | `/api/v1/admin/asis-sync` | ASIS 최신화 대상 조회와 최신 표시를 지원합니다. |
+| `GET/PATCH` | `/api/v1/admin/reports` | 신고 목록과 처리/반려를 지원합니다. |
+| `GET` | `/api/v1/admin/managers` | 관리자 계정 목록을 조회합니다. |
+| `GET` | `/api/v1/admin/audit-logs` | 관리자 감사 로그를 조회합니다. |
+
+도메인 enum은 DB에서 `varchar`로 저장하고, Java 엔티티에서 `@Enumerated(EnumType.STRING)`으로 매핑합니다.
+
 ## 빌드
 
 ```shell

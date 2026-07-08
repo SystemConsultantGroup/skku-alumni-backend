@@ -12,3 +12,6 @@ minio:
   access-key: test-access-key
   secret-key: test-secret-key
   bucket: test-bucket
+
+auth:
+  jwt-secret: test-secret-that-is-long-enough-for-hmac-signing
