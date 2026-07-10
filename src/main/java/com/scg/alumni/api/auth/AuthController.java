@@ -11,6 +11,8 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpHeaders;
@@ -48,12 +50,37 @@ public class AuthController {
         if (!passwordEncoder.matches(request.password(), credential.password())) {
             throw unauthorized();
         }
-        if (!hasCurrentPaidOfficerHistory(credential.id())) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "현행 임기 회비 납부 임원만 이용할 수 있습니다.");
-        }
 
         AuthenticatedPrincipal principal = new AuthenticatedPrincipal(credential.id(), AuthScope.MEMBER, credential.name());
         return issueAuthResponse(principal, httpRequest, httpResponse);
+    }
+
+    @PostMapping("/member/signup")
+    @Transactional
+    public SignupResponse memberSignup(@Valid @RequestBody SignupRequest request) {
+        SignupCandidate candidate = findSignupCandidate(request);
+        if (!confirmationMatches(candidate, request)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "일치하는 동문 정보를 찾을 수 없습니다.");
+        }
+        if ("ACTIVE".equals(candidate.status())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "이미 활성화된 계정입니다. 로그인해주세요.");
+        }
+        if ("REJECTED".equals(candidate.status())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "가입 승인이 반려된 계정입니다. 사무처에 문의해주세요.");
+        }
+
+        jdbcTemplate.update("""
+                        update users
+                        set password = ?,
+                            phone = coalesce(phone, ?),
+                            email = coalesce(email, ?),
+                            status = 'PENDING',
+                            updated_at = CURRENT_TIMESTAMP
+                        where id = ?
+                        """,
+                passwordEncoder.encode(request.password()), request.phone(), request.email(), candidate.id());
+
+        return new SignupResponse(candidate.id(), candidate.name(), AuthScope.MEMBER, "PENDING");
     }
 
     @PostMapping("/admin/login")
@@ -161,16 +188,48 @@ public class AuthController {
                 .orElseThrow(this::unauthorized);
     }
 
-    private boolean hasCurrentPaidOfficerHistory(Long userId) {
-        Long count = jdbcTemplate.queryForObject("""
-                select count(*)
-                from officer_histories oh
-                join officer_terms ot on ot.id = oh.officer_term_id
-                where oh.user_id = ?
-                  and oh.payment_status = 'PAID'
-                  and ot.current_term = true
-                """, Long.class, userId);
-        return count != null && count > 0;
+    private SignupCandidate findSignupCandidate(SignupRequest request) {
+        return jdbcTemplate.query("""
+                        select id, name, phone, email, status
+                        from users
+                        where student_id = ?
+                          and name = ?
+                          and admission_year = ?
+                        order by id
+                        limit 1
+                        """,
+                (resultSet, rowNum) -> new SignupCandidate(
+                        resultSet.getLong("id"),
+                        resultSet.getString("name"),
+                        resultSet.getString("phone"),
+                        resultSet.getString("email"),
+                        resultSet.getString("status")
+                ),
+                request.studentId(), request.name().trim(), request.admissionYear())
+                .stream()
+                .findFirst()
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "일치하는 동문 정보를 찾을 수 없습니다."));
+    }
+
+    private boolean confirmationMatches(SignupCandidate candidate, SignupRequest request) {
+        boolean hasStoredPhone = candidate.phone() != null && !candidate.phone().isBlank();
+        boolean hasStoredEmail = candidate.email() != null && !candidate.email().isBlank();
+        boolean phoneMatches = hasStoredPhone && normalizePhone(candidate.phone()).equals(normalizePhone(request.phone()));
+        boolean emailMatches = hasStoredEmail
+                && request.email() != null
+                && candidate.email().equalsIgnoreCase(request.email().trim());
+
+        if (!hasStoredPhone && !hasStoredEmail) {
+            return true;
+        }
+        return phoneMatches || emailMatches;
+    }
+
+    private String normalizePhone(String phone) {
+        if (phone == null) {
+            return "";
+        }
+        return phone.replaceAll("[^0-9]", "");
     }
 
     private void revokeAndClear(AuthScope scope, HttpServletRequest request, HttpServletResponse response) {
@@ -233,11 +292,34 @@ public class AuthController {
     ) {
     }
 
+    public record SignupRequest(
+            @NotBlank String name,
+            @NotBlank String studentId,
+            @NotNull Integer admissionYear,
+            @NotBlank String phone,
+            String email,
+            @NotBlank
+            @Pattern(
+                    regexp = "^(?=.*[A-Za-z])(?=.*\\d)(?=.*[^A-Za-z0-9]).{8,}$",
+                    message = "비밀번호는 8자 이상이며 영문, 숫자, 특수문자를 포함해야 합니다."
+            )
+            String password
+    ) {
+    }
+
     public record AuthResponse(
             AuthScope scope,
             Long id,
             String name,
             String accessTokenExpiresAt
+    ) {
+    }
+
+    public record SignupResponse(
+            Long id,
+            String name,
+            AuthScope scope,
+            String status
     ) {
     }
 
@@ -252,6 +334,15 @@ public class AuthController {
             Long id,
             String name,
             String password
+    ) {
+    }
+
+    private record SignupCandidate(
+            Long id,
+            String name,
+            String phone,
+            String email,
+            String status
     ) {
     }
 }

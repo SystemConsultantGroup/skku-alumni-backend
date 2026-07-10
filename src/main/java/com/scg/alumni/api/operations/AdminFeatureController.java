@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -19,6 +20,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
 
 @RestController
 @RequiredArgsConstructor
@@ -32,6 +34,7 @@ public class AdminFeatureController {
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("stats", Map.of(
                 "activeMembers", count("select count(*) from users where status = 'ACTIVE'"),
+                "pendingMembers", count("select count(*) from users where status = 'PENDING'"),
                 "paidCurrentOfficers", count("""
                         select count(*)
                         from officer_histories oh
@@ -101,6 +104,26 @@ public class AdminFeatureController {
                 normalizedMemberStatus, normalizedMemberStatus,
                 CursorPageFactory.queryLimit(size));
         return CursorPageFactory.from(rows, size);
+    }
+
+    @PatchMapping("/members/{id}/status")
+    @Transactional
+    public Map<String, Object> updateMemberStatus(
+            @PathVariable Long id,
+            @Valid @RequestBody StatusUpdateRequest request
+    ) {
+        String status = normalizeRequiredStatus(request.status(), "PENDING", "ACTIVE", "REJECTED");
+        int updated = jdbcTemplate.update("""
+                update users
+                set status = ?, updated_at = CURRENT_TIMESTAMP
+                where id = ?
+                """, status, id);
+        if (updated == 0) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "회원을 찾을 수 없습니다.");
+        }
+
+        audit("UPDATE_MEMBER_STATUS", "user", id);
+        return Map.of("id", id, "status", status);
     }
 
     @GetMapping("/applications")
@@ -290,6 +313,19 @@ public class AdminFeatureController {
             return null;
         }
         return value.trim().toUpperCase(Locale.ROOT);
+    }
+
+    private String normalizeRequiredStatus(String value, String... allowedStatuses) {
+        if (!StringUtils.hasText(value)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "상태값이 필요합니다.");
+        }
+        String status = value.trim().toUpperCase(Locale.ROOT);
+        for (String allowedStatus : allowedStatuses) {
+            if (allowedStatus.equals(status)) {
+                return status;
+            }
+        }
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "허용되지 않는 상태값입니다.");
     }
 
     private void audit(String action, String targetType, Long targetId) {
