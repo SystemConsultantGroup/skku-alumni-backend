@@ -81,19 +81,20 @@ public class AdminFeatureController {
         String normalizedPaymentStatus = normalizeUpper(paymentStatus);
         String normalizedMemberStatus = normalizeUpper(memberStatus);
         List<Map<String, Object>> rows = jdbcTemplate.query("""
-                select u.id, u.name, u.student_id, u.phone, u.email, u.status,
+                select u.id, u.name, u.kingo_id as user_login_id, u.student_id, u.phone, u.email, u.status,
                        m.name as major_name, co.name as company_name, u.job_title,
                        ot.generation, ot.phase, orole.name as officer_role_name,
-                       oh.payment_status
+                       coalesce(oh.payment_status, pr.status) as payment_status
                 from users u
                 join majors m on m.id = u.major_id
                 left join companies co on co.id = u.company_id
-                left join officer_histories oh on oh.user_id = u.id
-                left join officer_terms ot on ot.id = oh.officer_term_id and ot.current_term = true
+                left join officer_terms ot on ot.current_term = true
+                left join officer_histories oh on oh.user_id = u.id and oh.officer_term_id = ot.id
                 left join officer_roles orole on orole.id = oh.officer_role_id
+                left join payment_records pr on pr.user_id = u.id and pr.officer_term_id = ot.id
                 where (? is null or u.id < ?)
                   and (? is null or lower(u.name) like ? or lower(m.name) like ? or lower(coalesce(co.name, '')) like ?)
-                  and (? is null or oh.payment_status = ?)
+                  and (? is null or coalesce(oh.payment_status, pr.status) = ?)
                   and (? is null or u.status = ?)
                 order by u.id desc
                 limit ?
@@ -113,6 +114,9 @@ public class AdminFeatureController {
             @Valid @RequestBody StatusUpdateRequest request
     ) {
         String status = normalizeRequiredStatus(request.status(), "PENDING", "ACTIVE", "REJECTED");
+        if ("ACTIVE".equals(status) && !hasPaidCurrentOfficerFee(id)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "현행 임기 회비 납부 확인 후 활성화할 수 있습니다.");
+        }
         int updated = jdbcTemplate.update("""
                 update users
                 set status = ?, updated_at = CURRENT_TIMESTAMP
@@ -152,13 +156,20 @@ public class AdminFeatureController {
             @PathVariable Long id,
             @Valid @RequestBody StatusUpdateRequest request
     ) {
+        String status = normalizeRequiredStatus(request.status(), "PENDING", "APPROVED", "REJECTED");
+        if ("APPROVED".equals(status)) {
+            Long userId = approveApplication(id);
+            audit("APPROVE_APPLICATION", "member_application", id);
+            return Map.of("id", id, "status", status, "userId", userId);
+        }
+
         jdbcTemplate.update("""
                 update member_applications
                 set status = ?, reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
                 where id = ?
-                """, request.status(), AuthContext.currentAdminId(), id);
+                """, status, AuthContext.currentAdminId(), id);
         audit("UPDATE_APPLICATION_STATUS", "member_application", id);
-        return Map.of("id", id, "status", request.status());
+        return Map.of("id", id, "status", status);
     }
 
     @GetMapping("/payments")
@@ -191,13 +202,29 @@ public class AdminFeatureController {
             @PathVariable Long id,
             @Valid @RequestBody StatusUpdateRequest request
     ) {
+        String status = normalizeRequiredStatus(request.status(), "PAID", "UNPAID");
+        Map<String, Object> payment = jdbcTemplate.query("""
+                select user_id, officer_term_id
+                from payment_records
+                where id = ?
+                """, JdbcResponseMapper.INSTANCE, id)
+                .stream()
+                .findFirst()
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "회비 내역을 찾을 수 없습니다."));
+
         jdbcTemplate.update("""
                 update payment_records
                 set status = ?, paid_at = case when ? = 'PAID' then CURRENT_TIMESTAMP else null end, updated_at = CURRENT_TIMESTAMP
                 where id = ?
-                """, request.status(), request.status(), id);
+                """, status, status, id);
+        jdbcTemplate.update("""
+                update officer_histories
+                set payment_status = ?, updated_at = CURRENT_TIMESTAMP
+                where user_id = ?
+                  and officer_term_id = ?
+                """, status, payment.get("userId"), payment.get("officerTermId"));
         audit("UPDATE_PAYMENT_STATUS", "payment_record", id);
-        return Map.of("id", id, "status", request.status());
+        return Map.of("id", id, "status", status);
     }
 
     @GetMapping("/asis-sync")
@@ -326,6 +353,255 @@ public class AdminFeatureController {
             }
         }
         throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "허용되지 않는 상태값입니다.");
+    }
+
+    private Long approveApplication(Long applicationId) {
+        Map<String, Object> application = jdbcTemplate.query("""
+                select id, name, student_id, phone, email, major_name, admission_year, desired_role,
+                       company_name, job_title, status
+                from member_applications
+                where id = ?
+                """, JdbcResponseMapper.INSTANCE, applicationId)
+                .stream()
+                .findFirst()
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "신청을 찾을 수 없습니다."));
+
+        Long majorId = findMajorId(text(application.get("majorName")));
+        Long officerRoleId = findOfficerRoleId(text(application.get("desiredRole")));
+        Long officerTermId = findCurrentOfficerTermId();
+        Long companyId = findOrCreateCompanyId(text(application.get("companyName")));
+        Long userId = findOrCreateApplicationUser(application, majorId, companyId);
+
+        ensureCurrentOfficerHistory(userId, officerTermId, officerRoleId);
+        ensurePaymentRecord(userId, officerTermId, paymentAmount(text(application.get("desiredRole"))));
+
+        jdbcTemplate.update("""
+                update member_applications
+                set status = 'APPROVED', reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                where id = ?
+                """, AuthContext.currentAdminId(), applicationId);
+        return userId;
+    }
+
+    private Long findOrCreateApplicationUser(Map<String, Object> application, Long majorId, Long companyId) {
+        String studentId = text(application.get("studentId"));
+        String phone = text(application.get("phone"));
+        Integer admissionYear = number(application.get("admissionYear"));
+
+        Long existingId = findExistingApplicationUser(text(application.get("name")), admissionYear, majorId, phone, studentId);
+        if (existingId != null) {
+            return existingId;
+        }
+
+        String storedStudentId = StringUtils.hasText(studentId) ? studentId : "APPLICATION-" + application.get("id");
+        jdbcTemplate.update("""
+                insert into users (
+                    student_id, kingo_id, name, password, category, degree, major_id,
+                    admission_year, phone, email, email_receive, company_id, job_title,
+                    status, created_at, updated_at
+                ) values (?, null, ?, '', 'UNDERGRADUATE', 'BACHELOR', ?, ?, ?, ?, true, ?, ?, 'PENDING', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """,
+                storedStudentId, text(application.get("name")), majorId, admissionYear, phone,
+                text(application.get("email")), companyId, text(application.get("jobTitle")));
+
+        return jdbcTemplate.queryForObject("select id from users where student_id = ?", Long.class, storedStudentId);
+    }
+
+    private Long findExistingApplicationUser(String name, Integer admissionYear, Long majorId, String phone, String studentId) {
+        if (StringUtils.hasText(studentId)) {
+            Long byStudentId = jdbcTemplate.query("""
+                    select id
+                    from users
+                    where student_id = ?
+                    order by id
+                    limit 1
+                    """, (resultSet, rowNum) -> resultSet.getLong("id"), studentId)
+                    .stream()
+                    .findFirst()
+                    .orElse(null);
+            if (byStudentId != null) {
+                return byStudentId;
+            }
+        }
+
+        return jdbcTemplate.query("""
+                select id
+                from users
+                where name = ?
+                  and admission_year = ?
+                  and major_id = ?
+                  and replace(replace(replace(coalesce(phone, ''), '-', ''), ' ', ''), '.', '') = ?
+                order by id
+                limit 1
+                """, (resultSet, rowNum) -> resultSet.getLong("id"), name, admissionYear, majorId, normalizePhone(phone))
+                .stream()
+                .findFirst()
+                .orElse(null);
+    }
+
+    private Long findMajorId(String majorName) {
+        if (!StringUtils.hasText(majorName)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "학과 정보가 필요합니다.");
+        }
+        return jdbcTemplate.query("""
+                select coalesce(display_major_id, id) as id
+                from majors
+                where lower(replace(name, ' ', '')) = ?
+                   or lower(replace(normalized_name, ' ', '')) = ?
+                order by case when status = 'ACTIVE' then 0 else 1 end, id
+                limit 1
+                """, (resultSet, rowNum) -> resultSet.getLong("id"), normalizeText(majorName), normalizeText(majorName))
+                .stream()
+                .findFirst()
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "일치하는 학과를 찾을 수 없습니다."));
+    }
+
+    private Long findOfficerRoleId(String roleName) {
+        if (!StringUtils.hasText(roleName)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "희망 직급이 필요합니다.");
+        }
+        return jdbcTemplate.query("""
+                select id
+                from officer_roles
+                where lower(replace(name, ' ', '')) = ?
+                order by id
+                limit 1
+                """, (resultSet, rowNum) -> resultSet.getLong("id"), normalizeText(roleName))
+                .stream()
+                .findFirst()
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "일치하는 임원 직급을 찾을 수 없습니다."));
+    }
+
+    private Long findCurrentOfficerTermId() {
+        return jdbcTemplate.query("""
+                select id
+                from officer_terms
+                where current_term = true
+                order by id desc
+                limit 1
+                """, (resultSet, rowNum) -> resultSet.getLong("id"))
+                .stream()
+                .findFirst()
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "현행 임기를 찾을 수 없습니다."));
+    }
+
+    private Long findOrCreateCompanyId(String companyName) {
+        if (!StringUtils.hasText(companyName)) {
+            return null;
+        }
+        Long existingId = jdbcTemplate.query("""
+                select id
+                from companies
+                where name = ?
+                order by id
+                limit 1
+                """, (resultSet, rowNum) -> resultSet.getLong("id"), companyName)
+                .stream()
+                .findFirst()
+                .orElse(null);
+        if (existingId != null) {
+            return existingId;
+        }
+        jdbcTemplate.update("""
+                insert into companies (name, created_at, updated_at)
+                values (?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """, companyName);
+        return jdbcTemplate.queryForObject("select id from companies where name = ?", Long.class, companyName);
+    }
+
+    private void ensureCurrentOfficerHistory(Long userId, Long officerTermId, Long officerRoleId) {
+        Integer count = jdbcTemplate.queryForObject("""
+                select count(*)
+                from officer_histories
+                where user_id = ?
+                  and officer_term_id = ?
+                """, Integer.class, userId, officerTermId);
+        if (count != null && count > 0) {
+            jdbcTemplate.update("""
+                    update officer_histories
+                    set officer_role_id = ?, updated_at = CURRENT_TIMESTAMP
+                    where user_id = ?
+                      and officer_term_id = ?
+                    """, officerRoleId, userId, officerTermId);
+            return;
+        }
+        jdbcTemplate.update("""
+                insert into officer_histories (
+                    user_id, officer_term_id, officer_role_id, started_at, payment_status, created_at, updated_at
+                )
+                select ?, id, ?, started_at, 'UNPAID', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                from officer_terms
+                where id = ?
+                """, userId, officerRoleId, officerTermId);
+    }
+
+    private void ensurePaymentRecord(Long userId, Long officerTermId, int amount) {
+        Integer count = jdbcTemplate.queryForObject("""
+                select count(*)
+                from payment_records
+                where user_id = ?
+                  and officer_term_id = ?
+                """, Integer.class, userId, officerTermId);
+        if (count != null && count > 0) {
+            return;
+        }
+        jdbcTemplate.update("""
+                insert into payment_records (
+                    user_id, officer_term_id, amount, status, created_at, updated_at
+                ) values (?, ?, ?, 'UNPAID', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """, userId, officerTermId, amount);
+    }
+
+    private boolean hasPaidCurrentOfficerFee(Long userId) {
+        Integer count = jdbcTemplate.queryForObject("""
+                select count(*)
+                from officer_histories oh
+                join officer_terms ot on ot.id = oh.officer_term_id
+                left join payment_records pr on pr.user_id = oh.user_id and pr.officer_term_id = oh.officer_term_id
+                where oh.user_id = ?
+                  and ot.current_term = true
+                  and (oh.payment_status = 'PAID' or pr.status = 'PAID')
+                """, Integer.class, userId);
+        return count != null && count > 0;
+    }
+
+    private int paymentAmount(String roleName) {
+        if ("회장".equals(roleName)) {
+            return 1_000_000;
+        }
+        return 300_000;
+    }
+
+    private String text(Object value) {
+        if (value == null) {
+            return null;
+        }
+        String text = value.toString().trim();
+        return text.isEmpty() ? null : text;
+    }
+
+    private Integer number(Object value) {
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        if (value != null && StringUtils.hasText(value.toString())) {
+            return Integer.valueOf(value.toString());
+        }
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "입학년도가 필요합니다.");
+    }
+
+    private String normalizeText(String value) {
+        if (value == null) {
+            return "";
+        }
+        return value.replaceAll("\\s+", "").toLowerCase(Locale.ROOT);
+    }
+
+    private String normalizePhone(String phone) {
+        if (phone == null) {
+            return "";
+        }
+        return phone.replaceAll("[^0-9]", "");
     }
 
     private void audit(String action, String targetType, Long targetId) {
