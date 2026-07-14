@@ -28,6 +28,13 @@ public class ReferenceDataController {
                 from industries
                 order by name
                 """, JdbcResponseMapper.INSTANCE));
+        response.put("companies", jdbcTemplate.query("""
+                select c.id, c.name, c.work_zipcode, c.work_address1, c.work_address2,
+                       c.description, c.industry_id, i.name as industry_name
+                from companies c
+                left join industries i on i.id = c.industry_id
+                order by c.name
+                """, JdbcResponseMapper.INSTANCE));
         response.put("hobbies", jdbcTemplate.query("""
                 select h.id, h.name, count(uh.id) as member_count
                 from hobbies h

@@ -5,6 +5,9 @@ import com.scg.alumni.global.security.AuthContext;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
+import java.net.URI;
+import java.time.LocalDate;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -33,16 +36,36 @@ public class UserFeatureController {
     @GetMapping("/me")
     public Map<String, Object> findMe() {
         Long currentUserId = AuthContext.currentMemberId();
-        return jdbcTemplate.queryForObject("""
+        Map<String, Object> profile = jdbcTemplate.queryForObject("""
                 select u.id, u.name, u.student_id, u.email, u.phone, u.home_address1, u.home_address2,
-                       u.admission_year, u.graduation_year, u.job_title, u.pr_text,
-                       m.name as major_name, co.name as company_name, i.name as industry_name
+                       u.birth_date, u.birth_date_public, u.phone_public, u.email_public,
+                       u.admission_year, u.graduation_year, u.job_title, u.pr_text, u.company_id,
+                       m.name as major_name, co.name as company_name,
+                       co.work_zipcode as company_zipcode, co.work_address1 as company_address1,
+                       co.work_address2 as company_address2, co.description as company_description,
+                       co.industry_id, i.name as industry_name,
+                       ot.generation as officer_generation, ot.phase as officer_phase,
+                       orole.name as officer_role_name
                 from users u
                 join majors m on m.id = u.major_id
                 left join companies co on co.id = u.company_id
-                left join industries i on i.id = u.industry_id
+                left join industries i on i.id = co.industry_id
+                left join officer_terms ot on ot.current_term = true
+                left join officer_histories oh on oh.user_id = u.id and oh.officer_term_id = ot.id
+                left join officer_roles orole on orole.id = oh.officer_role_id
                 where u.id = ?
                 """, JdbcResponseMapper.INSTANCE, currentUserId);
+        profile.put("hobbies", jdbcTemplate.query("""
+                select h.id, h.name
+                from user_hobbies uh
+                join hobbies h on h.id = uh.hobby_id
+                where uh.user_id = ?
+                order by h.name
+                """, JdbcResponseMapper.INSTANCE, currentUserId));
+        profile.put("webLinks", jdbcTemplate.queryForList("""
+                select url from user_web_links where user_id = ? order by id
+                """, String.class, currentUserId));
+        return profile;
     }
 
     @PatchMapping("/me")
@@ -53,19 +76,131 @@ public class UserFeatureController {
         jdbcTemplate.update(
                 """
                         update users
-                        set phone = ?, email = ?, home_address1 = ?, home_address2 = ?, pr_text = ?, updated_at = CURRENT_TIMESTAMP
+                        set birth_date = ?, birth_date_public = ?, phone = ?, phone_public = ?,
+                            email = ?, email_public = ?, home_address1 = ?, home_address2 = ?,
+                            company_id = ?, industry_id = (select industry_id from companies where id = ?),
+                            job_title = ?, pr_text = ?, updated_at = CURRENT_TIMESTAMP
                         where id = ?
                         """,
-                request.phone(), request.email(), request.homeAddress1(), request.homeAddress2(), request.prText(),
+                request.birthDate(), request.birthDatePublic(), request.phone(), request.phonePublic(),
+                request.email(), request.emailPublic(), request.homeAddress1(), request.homeAddress2(),
+                request.companyId(), request.companyId(), request.jobTitle(), request.prText(),
                 AuthContext.currentMemberId());
+
+        replaceHobbies(AuthContext.currentMemberId(), request.hobbyIds());
+        replaceWebLinks(AuthContext.currentMemberId(), request.webLinks());
 
         logProfileChange("phone", current.get("phone"), request.phone());
         logProfileChange("email", current.get("email"), request.email());
+        logProfileChange("birth_date", current.get("birthDate"), request.birthDate());
         logProfileChange("home_address1", current.get("homeAddress1"), request.homeAddress1());
         logProfileChange("home_address2", current.get("homeAddress2"), request.homeAddress2());
         logProfileChange("pr_text", current.get("prText"), request.prText());
+        logProfileChange("company_id", current.get("companyId"), request.companyId());
+        logProfileChange("job_title", current.get("jobTitle"), request.jobTitle());
 
         return findMe();
+    }
+
+    @GetMapping("/members/{memberId}")
+    public Map<String, Object> findMemberDetail(@PathVariable Long memberId) {
+        Map<String, Object> member = jdbcTemplate.query("""
+                select u.id, u.name, u.admission_year, u.graduation_year, u.job_title, u.pr_text,
+                       case when u.birth_date_public then u.birth_date else null end as birth_date,
+                       case when u.phone_public then u.phone else null end as phone,
+                       case when u.email_public then u.email else null end as email,
+                       m.name as major_name, co.name as company_name,
+                       co.work_zipcode as company_zipcode, co.work_address1 as company_address1,
+                       co.work_address2 as company_address2, co.description as company_description,
+                       i.name as industry_name, ot.generation as officer_generation,
+                       ot.phase as officer_phase, orole.name as officer_role_name
+                from users u
+                join majors m on m.id = u.major_id
+                join officer_terms ot on ot.current_term = true
+                join officer_histories oh on oh.user_id = u.id and oh.officer_term_id = ot.id
+                join officer_roles orole on orole.id = oh.officer_role_id
+                left join companies co on co.id = u.company_id
+                left join industries i on i.id = co.industry_id
+                where u.id = ? and u.status = 'ACTIVE' and oh.payment_status = 'PAID'
+                """, JdbcResponseMapper.INSTANCE, memberId).stream()
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("임원 정보를 찾을 수 없습니다."));
+        member.put("hobbies", jdbcTemplate.queryForList("""
+                select h.name from user_hobbies uh join hobbies h on h.id = uh.hobby_id
+                where uh.user_id = ? order by h.name
+                """, String.class, memberId));
+        member.put("webLinks", jdbcTemplate.queryForList("""
+                select url from user_web_links where user_id = ? order by id
+                """, String.class, memberId));
+        return member;
+    }
+
+    @PostMapping("/companies")
+    @Transactional
+    public Map<String, Object> createCompany(@Valid @RequestBody CompanyCreateRequest request) {
+        Integer duplicateCount = jdbcTemplate.queryForObject(
+                "select count(*) from companies where lower(trim(name)) = lower(trim(?))", Integer.class, request.name());
+        if (duplicateCount != null && duplicateCount > 0) {
+            throw new IllegalArgumentException("이미 등록된 회사명입니다.");
+        }
+        Integer industryCount = jdbcTemplate.queryForObject(
+                "select count(*) from industries where id = ?", Integer.class, request.industryId());
+        if (industryCount == null || industryCount == 0) {
+            throw new IllegalArgumentException("존재하지 않는 사업 분야입니다.");
+        }
+        jdbcTemplate.update("""
+                insert into companies (
+                    name, work_zipcode, work_address1, work_address2, industry_id, description, created_at, updated_at
+                ) values (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """, request.name().trim(), request.workZipcode(), request.workAddress1(), request.workAddress2(),
+                request.industryId(), request.description());
+        Long id = jdbcTemplate.queryForObject("select last_insert_id()", Long.class);
+        return jdbcTemplate.queryForObject("""
+                select c.id, c.name, c.work_zipcode, c.work_address1, c.work_address2,
+                       c.description, c.industry_id, i.name as industry_name
+                from companies c join industries i on i.id = c.industry_id where c.id = ?
+                """, JdbcResponseMapper.INSTANCE, id);
+    }
+
+    private void replaceHobbies(Long userId, List<Long> hobbyIds) {
+        List<Long> uniqueIds = hobbyIds == null ? List.of() : hobbyIds.stream().distinct().toList();
+        if (!uniqueIds.isEmpty()) {
+            String placeholders = String.join(",", java.util.Collections.nCopies(uniqueIds.size(), "?"));
+            Integer count = jdbcTemplate.queryForObject(
+                    "select count(*) from hobbies where id in (" + placeholders + ")",
+                    Integer.class, uniqueIds.toArray());
+            if (count == null || count != uniqueIds.size()) {
+                throw new IllegalArgumentException("존재하지 않는 취미가 포함되어 있습니다.");
+            }
+        }
+        jdbcTemplate.update("delete from user_hobbies where user_id = ?", userId);
+        uniqueIds.forEach(hobbyId -> jdbcTemplate.update("""
+                insert into user_hobbies (user_id, hobby_id, created_at, updated_at)
+                values (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """, userId, hobbyId));
+    }
+
+    private void replaceWebLinks(Long userId, List<String> webLinks) {
+        List<String> normalizedLinks = webLinks == null ? List.of() : webLinks.stream()
+                .map(String::trim).filter(StringUtils::hasText).distinct().toList();
+        normalizedLinks.forEach(this::validateWebLink);
+        jdbcTemplate.update("delete from user_web_links where user_id = ?", userId);
+        normalizedLinks.forEach(url -> jdbcTemplate.update("""
+                insert into user_web_links (user_id, url, created_at, updated_at)
+                values (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """, userId, url));
+    }
+
+    private void validateWebLink(String value) {
+        try {
+            URI uri = URI.create(value);
+            if (!("http".equalsIgnoreCase(uri.getScheme()) || "https".equalsIgnoreCase(uri.getScheme()))
+                    || !StringUtils.hasText(uri.getHost())) {
+                throw new IllegalArgumentException("웹 링크는 http 또는 https URL이어야 합니다.");
+            }
+        } catch (IllegalArgumentException exception) {
+            throw new IllegalArgumentException("올바르지 않은 웹 링크가 포함되어 있습니다.");
+        }
     }
 
     @PostMapping("/member-applications")
@@ -233,11 +368,28 @@ public class UserFeatureController {
     }
 
     public record ProfileUpdateRequest(
+            LocalDate birthDate,
+            boolean birthDatePublic,
             String phone,
+            boolean phonePublic,
             String email,
+            boolean emailPublic,
             String homeAddress1,
             String homeAddress2,
-            String prText) {
+            Long companyId,
+            @Size(max = 255) String jobTitle,
+            List<Long> hobbyIds,
+            List<@Size(max = 1000) String> webLinks,
+            @Size(max = 500) String prText) {
+    }
+
+    public record CompanyCreateRequest(
+            @NotBlank @Size(max = 255) String name,
+            @Size(max = 50) String workZipcode,
+            @Size(max = 255) String workAddress1,
+            @Size(max = 255) String workAddress2,
+            @NotNull Long industryId,
+            @Size(max = 1000) String description) {
     }
 
     public record MemberApplicationRequest(
