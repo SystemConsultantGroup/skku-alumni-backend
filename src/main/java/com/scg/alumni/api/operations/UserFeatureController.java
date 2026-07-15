@@ -267,18 +267,71 @@ public class UserFeatureController {
                 """, JdbcResponseMapper.INSTANCE);
     }
 
+    @GetMapping("/clubs/{clubId}")
+    public Map<String, Object> findClub(@PathVariable Long clubId) {
+        return jdbcTemplate.queryForObject("""
+                select c.id, c.name, c.description, c.category, president.name as president_name,
+                       max(secretary.name) as secretary_name, count(distinct cm.id) as member_count,
+                       count(distinct p.id) as post_count
+                from clubs c
+                left join users president on president.id = c.president_user_id
+                left join club_members cm on cm.club_id = c.id and cm.left_at is null
+                left join club_members secretary_member on secretary_member.club_id = c.id
+                       and secretary_member.left_at is null and secretary_member.club_role = 'SECRETARY'
+                left join users secretary on secretary.id = secretary_member.user_id
+                left join posts p on p.club_id = c.id and p.post_kind = 'CLUB' and p.status = 'PUBLISHED'
+                where c.id = ?
+                group by c.id, c.name, c.description, c.category, president.name
+                """, JdbcResponseMapper.INSTANCE, clubId);
+    }
+
+    @GetMapping("/clubs/{clubId}/members")
+    public List<Map<String, Object>> findClubMembers(@PathVariable Long clubId) {
+        return jdbcTemplate.query("""
+                select cm.id, cm.club_role, cm.joined_at, u.id as user_id, u.name,
+                       u.admission_year, u.job_title, m.name as major_name,
+                       co.name as company_name, i.name as industry_name
+                from club_members cm
+                join users u on u.id = cm.user_id
+                join majors m on m.id = u.major_id
+                left join companies co on co.id = u.company_id
+                left join industries i on i.id = u.industry_id
+                where cm.club_id = ? and cm.left_at is null
+                order by case cm.club_role when 'PRESIDENT' then 1 when 'SECRETARY' then 2 else 3 end, u.name
+                """, JdbcResponseMapper.INSTANCE, clubId);
+    }
+
+    @GetMapping("/clubs/{clubId}/posts")
+    public List<Map<String, Object>> findClubPosts(@PathVariable Long clubId) {
+        return jdbcTemplate.query("""
+                select p.id, p.title, p.body, p.created_at, u.name as author_name
+                from posts p
+                join users u on u.id = p.user_id
+                where p.club_id = ? and p.post_kind = 'CLUB' and p.status = 'PUBLISHED'
+                order by p.id desc
+                """, JdbcResponseMapper.INSTANCE, clubId);
+    }
+
     @GetMapping("/notices")
     public CursorPageResponse<Map<String, Object>> findNotices(
             @RequestParam(required = false) Long cursor,
             @RequestParam(required = false) Integer size) {
-        return findPosts("NOTICE", cursor, size);
+        return findPosts("NOTICE", cursor, size, null);
+    }
+
+    @GetMapping("/news")
+    public CursorPageResponse<Map<String, Object>> findNews(
+            @RequestParam(required = false) Long cursor,
+            @RequestParam(required = false) Integer size) {
+        return findPosts("NEWS", cursor, size, null);
     }
 
     @GetMapping("/business-posts")
     public CursorPageResponse<Map<String, Object>> findBusinessPosts(
             @RequestParam(required = false) Long cursor,
-            @RequestParam(required = false) Integer size) {
-        return findPosts("BUSINESS", cursor, size);
+            @RequestParam(required = false) Integer size,
+            @RequestParam(required = false) Long industryId) {
+        return findPosts("BUSINESS", cursor, size, industryId);
     }
 
     @PostMapping("/reports")
@@ -331,19 +384,22 @@ public class UserFeatureController {
         return Map.of("blockedId", blockedId);
     }
 
-    private CursorPageResponse<Map<String, Object>> findPosts(String kind, Long cursor, Integer size) {
+    private CursorPageResponse<Map<String, Object>> findPosts(
+            String kind, Long cursor, Integer size, Long industryId) {
         List<Map<String, Object>> rows = jdbcTemplate.query("""
                 select p.id, p.title, p.body, p.thumbnail_url, p.created_at, u.name as author_name,
-                       i.name as industry_name
+                       p.industry_id, i.name as industry_name
                 from posts p
                 join users u on u.id = p.user_id
                 left join industries i on i.id = p.industry_id
                 where p.status = 'PUBLISHED'
                   and p.post_kind = ?
                   and (? is null or p.id < ?)
+                  and (? is null or p.industry_id = ?)
                 order by p.id desc
                 limit ?
-                """, JdbcResponseMapper.INSTANCE, kind, cursor, cursor, CursorPageFactory.queryLimit(size));
+                """, JdbcResponseMapper.INSTANCE, kind, cursor, cursor, industryId, industryId,
+                CursorPageFactory.queryLimit(size));
 
         return CursorPageFactory.from(rows, size);
     }
