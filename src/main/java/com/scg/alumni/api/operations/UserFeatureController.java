@@ -50,12 +50,14 @@ public class UserFeatureController {
     public Map<String, Object> updateMe(@Valid @RequestBody ProfileUpdateRequest request) {
         Map<String, Object> current = findMe();
 
-        jdbcTemplate.update("""
-                update users
-                set phone = ?, email = ?, home_address1 = ?, home_address2 = ?, pr_text = ?, updated_at = CURRENT_TIMESTAMP
-                where id = ?
-                """,
-                request.phone(), request.email(), request.homeAddress1(), request.homeAddress2(), request.prText(), AuthContext.currentMemberId());
+        jdbcTemplate.update(
+                """
+                        update users
+                        set phone = ?, email = ?, home_address1 = ?, home_address2 = ?, pr_text = ?, updated_at = CURRENT_TIMESTAMP
+                        where id = ?
+                        """,
+                request.phone(), request.email(), request.homeAddress1(), request.homeAddress2(), request.prText(),
+                AuthContext.currentMemberId());
 
         logProfileChange("phone", current.get("phone"), request.phone());
         logProfileChange("email", current.get("email"), request.email());
@@ -75,7 +77,8 @@ public class UserFeatureController {
                     company_name, job_title, status, created_at, updated_at
                 ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """,
-                request.name(), request.studentId(), request.phone(), request.email(), request.majorName(),
+                request.name(), blankToEmpty(request.studentId()), request.phone(), request.email(),
+                request.majorName(),
                 request.admissionYear(), request.desiredRole(), request.companyName(), request.jobTitle());
 
         Long id = jdbcTemplate.queryForObject("select max(id) from member_applications", Long.class);
@@ -132,16 +135,14 @@ public class UserFeatureController {
     @GetMapping("/notices")
     public CursorPageResponse<Map<String, Object>> findNotices(
             @RequestParam(required = false) Long cursor,
-            @RequestParam(required = false) Integer size
-    ) {
+            @RequestParam(required = false) Integer size) {
         return findPosts("NOTICE", cursor, size);
     }
 
     @GetMapping("/business-posts")
     public CursorPageResponse<Map<String, Object>> findBusinessPosts(
             @RequestParam(required = false) Long cursor,
-            @RequestParam(required = false) Integer size
-    ) {
+            @RequestParam(required = false) Integer size) {
         return findPosts("BUSINESS", cursor, size);
     }
 
@@ -153,7 +154,8 @@ public class UserFeatureController {
                 insert into reports (
                     reporter_id, target_type, target_post_id, reason, reason_others, status, created_at, updated_at
                 ) values (?, ?, ?, ?, ?, 'PENDING', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                """, currentUserId, request.targetType(), request.targetPostId(), request.reason(), request.reasonOthers());
+                """, currentUserId, request.targetType(), request.targetPostId(), request.reason(),
+                request.reasonOthers());
 
         Long id = jdbcTemplate.queryForObject("select max(id) from reports", Long.class);
         return Map.of("id", id, "status", "PENDING");
@@ -189,7 +191,8 @@ public class UserFeatureController {
     @DeleteMapping("/blocked-users/{blockedId}")
     @Transactional
     public Map<String, Object> unblockUser(@PathVariable Long blockedId) {
-        jdbcTemplate.update("delete from user_blocks where blocker_id = ? and blocked_id = ?", AuthContext.currentMemberId(), blockedId);
+        jdbcTemplate.update("delete from user_blocks where blocker_id = ? and blocked_id = ?",
+                AuthContext.currentMemberId(), blockedId);
         return Map.of("blockedId", blockedId);
     }
 
@@ -222,38 +225,41 @@ public class UserFeatureController {
                 newValue == null ? null : newValue.toString());
     }
 
+    private String blankToEmpty(String value) {
+        if (!StringUtils.hasText(value)) {
+            return "";
+        }
+        return value.trim();
+    }
+
     public record ProfileUpdateRequest(
             String phone,
             String email,
             String homeAddress1,
             String homeAddress2,
-            String prText
-    ) {
+            String prText) {
     }
 
     public record MemberApplicationRequest(
             @NotBlank String name,
-            @NotBlank String studentId,
-            String phone,
+            String studentId,
+            @NotBlank String phone,
             String email,
-            String majorName,
-            Integer admissionYear,
-            String desiredRole,
+            @NotBlank String majorName,
+            @NotNull Integer admissionYear,
+            @NotBlank String desiredRole,
             String companyName,
-            String jobTitle
-    ) {
+            String jobTitle) {
     }
 
     public record ReportCreateRequest(
             @NotBlank String targetType,
             @NotNull Long targetPostId,
             @NotBlank String reason,
-            String reasonOthers
-    ) {
+            String reasonOthers) {
     }
 
     public record BlockUserRequest(
-            @NotNull Long blockedId
-    ) {
+            @NotNull Long blockedId) {
     }
 }
