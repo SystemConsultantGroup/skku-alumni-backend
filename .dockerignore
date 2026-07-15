@@ -3,5 +3,8 @@
 .gradle
 .idea
 build
-*.iml
+!build/
+!build/libs/
+!build/libs/_.jar
+_.iml
 README.md
