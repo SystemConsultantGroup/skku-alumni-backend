@@ -15,6 +15,7 @@ import java.util.Locale;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.simple.SimpleJdbcInsert;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.http.HttpStatus;
@@ -41,19 +42,21 @@ public class UserFeatureController {
     public Map<String, Object> findMe() {
         Long currentUserId = AuthContext.currentMemberId();
         Map<String, Object> profile = jdbcTemplate.queryForObject("""
-                select u.id, u.name, u.student_id, u.email, u.phone, u.home_address1, u.home_address2,
+                select u.id, u.name, u.student_id, u.email, u.phone, u.home_zipcode, u.home_address1, u.home_address2,
                        u.birth_date, u.birth_date_public, u.phone_public, u.email_public,
+                       u.home_address_public, u.notification_enabled,
                        u.admission_year, u.graduation_year, u.job_title, u.pr_text, u.company_id,
+                       u.work_zipcode, u.work_address1, u.work_address2,
                        m.name as major_name, co.name as company_name,
-                       co.work_zipcode as company_zipcode, co.work_address1 as company_address1,
-                       co.work_address2 as company_address2, co.description as company_description,
-                       co.industry_id, i.name as industry_name,
+                       u.work_zipcode as company_zipcode, u.work_address1 as company_address1,
+                       u.work_address2 as company_address2, co.description as company_description,
+                       u.industry_id, i.name as industry_name,
                        ot.generation as officer_generation, ot.phase as officer_phase,
                        orole.name as officer_role_name
                 from users u
                 join majors m on m.id = u.major_id
                 left join companies co on co.id = u.company_id
-                left join industries i on i.id = co.industry_id
+                left join industries i on i.id = u.industry_id
                 left join officer_terms ot on ot.current_term = true
                 left join officer_histories oh on oh.user_id = u.id and oh.officer_term_id = ot.id
                 left join officer_roles orole on orole.id = oh.officer_role_id
@@ -81,14 +84,15 @@ public class UserFeatureController {
                 """
                         update users
                         set birth_date = ?, birth_date_public = ?, phone = ?, phone_public = ?,
-                            email = ?, email_public = ?, home_address1 = ?, home_address2 = ?,
-                            company_id = ?, industry_id = (select industry_id from companies where id = ?),
+                            email = ?, email_public = ?, home_zipcode = ?, home_address1 = ?, home_address2 = ?, home_address_public = ?,
+                            company_id = ?, industry_id = ?, work_zipcode = ?, work_address1 = ?, work_address2 = ?,
                             job_title = ?, pr_text = ?, updated_at = CURRENT_TIMESTAMP
                         where id = ?
                         """,
                 request.birthDate(), request.birthDatePublic(), request.phone(), request.phonePublic(),
-                request.email(), request.emailPublic(), request.homeAddress1(), request.homeAddress2(),
-                request.companyId(), request.companyId(), request.jobTitle(), request.prText(),
+                request.email(), request.emailPublic(), request.homeZipcode(), request.homeAddress1(), request.homeAddress2(), request.homeAddressPublic(),
+                request.companyId(), request.industryId(), request.workZipcode(), request.workAddress1(), request.workAddress2(),
+                request.jobTitle(), request.prText(),
                 AuthContext.currentMemberId());
 
         replaceHobbies(AuthContext.currentMemberId(), request.hobbyIds());
@@ -106,6 +110,19 @@ public class UserFeatureController {
         return findMe();
     }
 
+    @PatchMapping("/me/preferences")
+    @Transactional
+    public Map<String, Object> updatePreferences(@Valid @RequestBody PreferenceUpdateRequest request) {
+        jdbcTemplate.update("""
+                update users
+                set notification_enabled = ?, phone_public = ?, email_public = ?,
+                    home_address_public = ?, updated_at = CURRENT_TIMESTAMP
+                where id = ?
+                """, request.notificationEnabled(), request.phonePublic(), request.emailPublic(),
+                request.homeAddressPublic(), AuthContext.currentMemberId());
+        return findMe();
+    }
+
     @GetMapping("/members/{memberId}")
     public Map<String, Object> findMemberDetail(@PathVariable Long memberId) {
         Map<String, Object> member = jdbcTemplate.query("""
@@ -113,9 +130,11 @@ public class UserFeatureController {
                        case when u.birth_date_public then u.birth_date else null end as birth_date,
                        case when u.phone_public then u.phone else null end as phone,
                        case when u.email_public then u.email else null end as email,
+                       case when u.home_address_public then u.home_address1 else null end as home_address1,
+                       case when u.home_address_public then u.home_address2 else null end as home_address2,
                        m.name as major_name, co.name as company_name,
-                       co.work_zipcode as company_zipcode, co.work_address1 as company_address1,
-                       co.work_address2 as company_address2, co.description as company_description,
+                       u.work_zipcode as company_zipcode, u.work_address1 as company_address1,
+                       u.work_address2 as company_address2, co.description as company_description,
                        i.name as industry_name, ot.generation as officer_generation,
                        ot.phase as officer_phase, orole.name as officer_role_name
                 from users u
@@ -124,9 +143,12 @@ public class UserFeatureController {
                 join officer_histories oh on oh.user_id = u.id and oh.officer_term_id = ot.id
                 join officer_roles orole on orole.id = oh.officer_role_id
                 left join companies co on co.id = u.company_id
-                left join industries i on i.id = co.industry_id
+                left join industries i on i.id = u.industry_id
                 where u.id = ? and u.status = 'ACTIVE' and oh.payment_status = 'PAID'
-                """, JdbcResponseMapper.INSTANCE, memberId).stream()
+                  and not exists (
+                      select 1 from user_blocks ub where ub.blocker_id = ? and ub.blocked_id = u.id
+                  )
+                """, JdbcResponseMapper.INSTANCE, memberId, AuthContext.currentMemberId()).stream()
                 .findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("임원 정보를 찾을 수 없습니다."));
         member.put("hobbies", jdbcTemplate.queryForList("""
@@ -142,28 +164,50 @@ public class UserFeatureController {
     @PostMapping("/companies")
     @Transactional
     public Map<String, Object> createCompany(@Valid @RequestBody CompanyCreateRequest request) {
+        String name = request.name().trim().replaceAll("\\s+", " ");
         Integer duplicateCount = jdbcTemplate.queryForObject(
-                "select count(*) from companies where lower(trim(name)) = lower(trim(?))", Integer.class, request.name());
+                "select count(*) from companies where lower(replace(name, ' ', '')) = lower(replace(?, ' ', ''))",
+                Integer.class, name);
         if (duplicateCount != null && duplicateCount > 0) {
             throw new IllegalArgumentException("이미 등록된 회사명입니다.");
         }
-        Integer industryCount = jdbcTemplate.queryForObject(
-                "select count(*) from industries where id = ?", Integer.class, request.industryId());
-        if (industryCount == null || industryCount == 0) {
-            throw new IllegalArgumentException("존재하지 않는 사업 분야입니다.");
-        }
         jdbcTemplate.update("""
-                insert into companies (
-                    name, work_zipcode, work_address1, work_address2, industry_id, description, created_at, updated_at
-                ) values (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                """, request.name().trim(), request.workZipcode(), request.workAddress1(), request.workAddress2(),
-                request.industryId(), request.description());
+                insert into companies (name, created_at, updated_at)
+                values (?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """, name);
         Long id = jdbcTemplate.queryForObject("select last_insert_id()", Long.class);
         return jdbcTemplate.queryForObject("""
                 select c.id, c.name, c.work_zipcode, c.work_address1, c.work_address2,
                        c.description, c.industry_id, i.name as industry_name
-                from companies c join industries i on i.id = c.industry_id where c.id = ?
+                from companies c left join industries i on i.id = c.industry_id where c.id = ?
                 """, JdbcResponseMapper.INSTANCE, id);
+    }
+
+    @PostMapping("/hobbies")
+    @Transactional
+    public Map<String, Object> createHobby(@Valid @RequestBody HobbyCreateRequest request) {
+        String name = request.name().trim().replaceAll("\\s+", " ");
+        Integer duplicateCount = jdbcTemplate.queryForObject("""
+                select count(*) from hobbies
+                where lower(replace(name, ' ', '')) = lower(replace(?, ' ', ''))
+                """, Integer.class, name);
+        if (duplicateCount != null && duplicateCount > 0) {
+            throw new IllegalArgumentException("이미 등록된 취미입니다.");
+        }
+        try {
+            jdbcTemplate.update("""
+                    insert into hobbies (name, created_at, updated_at)
+                    values (?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """, name);
+        } catch (DuplicateKeyException exception) {
+            throw new IllegalArgumentException("이미 등록된 취미입니다.");
+        }
+        Long id = jdbcTemplate.queryForObject("select last_insert_id()", Long.class);
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("id", id);
+        response.put("name", name);
+        response.put("memberCount", 0);
+        return response;
     }
 
     private void replaceHobbies(Long userId, List<Long> hobbyIds) {
@@ -247,50 +291,65 @@ public class UserFeatureController {
 
     @GetMapping("/clubs")
     public List<Map<String, Object>> findClubs(@RequestParam(required = false) String category) {
+        Long currentUserId = AuthContext.currentMemberIdOrNull();
         if (StringUtils.hasText(category)) {
             return jdbcTemplate.query("""
-                    select c.id, c.name, c.description, c.category, u.name as president_name,
-                           count(cm.id) as member_count
+                    select c.id, c.name, c.description, c.category,
+                           case when exists (select 1 from user_blocks ub where ub.blocker_id = ? and ub.blocked_id = u.id)
+                                then '차단한 사용자' else u.name end as president_name,
+                           count(case when blocked.blocked_id is null then cm.id end) as member_count
                     from clubs c
                     left join users u on u.id = c.president_user_id
                     left join club_members cm on cm.club_id = c.id and cm.left_at is null
+                    left join user_blocks blocked on blocked.blocker_id = ? and blocked.blocked_id = cm.user_id
                     where c.category = ?
                     group by c.id, c.name, c.description, c.category, u.name
                     order by c.id desc
-                    """, JdbcResponseMapper.INSTANCE, category.toUpperCase(Locale.ROOT));
+                    """, JdbcResponseMapper.INSTANCE, currentUserId, currentUserId, category.toUpperCase(Locale.ROOT));
         }
 
         return jdbcTemplate.query("""
-                select c.id, c.name, c.description, c.category, u.name as president_name,
-                       count(cm.id) as member_count
+                select c.id, c.name, c.description, c.category,
+                       case when exists (select 1 from user_blocks ub where ub.blocker_id = ? and ub.blocked_id = u.id)
+                            then '차단한 사용자' else u.name end as president_name,
+                       count(case when blocked.blocked_id is null then cm.id end) as member_count
                 from clubs c
                 left join users u on u.id = c.president_user_id
                 left join club_members cm on cm.club_id = c.id and cm.left_at is null
+                left join user_blocks blocked on blocked.blocker_id = ? and blocked.blocked_id = cm.user_id
                 group by c.id, c.name, c.description, c.category, u.name
                 order by c.id desc
-                """, JdbcResponseMapper.INSTANCE);
+                """, JdbcResponseMapper.INSTANCE, currentUserId, currentUserId);
     }
 
     @GetMapping("/clubs/{clubId}")
     public Map<String, Object> findClub(@PathVariable Long clubId) {
+        Long currentUserId = AuthContext.currentMemberIdOrNull();
         return jdbcTemplate.queryForObject("""
-                select c.id, c.name, c.description, c.category, president.name as president_name,
-                       max(secretary.name) as secretary_name, count(distinct cm.id) as member_count,
-                       count(distinct p.id) as post_count
+                select c.id, c.name, c.description, c.category,
+                       case when president_block.blocked_id is not null then '차단한 사용자' else president.name end as president_name,
+                       max(case when secretary_block.blocked_id is null then secretary.name else '차단한 사용자' end) as secretary_name,
+                       count(distinct case when member_block.blocked_id is null then cm.id end) as member_count,
+                       count(distinct case when post_block.blocked_id is null then p.id end) as post_count
                 from clubs c
                 left join users president on president.id = c.president_user_id
+                left join user_blocks president_block on president_block.blocker_id = ? and president_block.blocked_id = president.id
                 left join club_members cm on cm.club_id = c.id and cm.left_at is null
+                left join user_blocks member_block on member_block.blocker_id = ? and member_block.blocked_id = cm.user_id
                 left join club_members secretary_member on secretary_member.club_id = c.id
                        and secretary_member.left_at is null and secretary_member.club_role = 'SECRETARY'
                 left join users secretary on secretary.id = secretary_member.user_id
+                left join user_blocks secretary_block on secretary_block.blocker_id = ? and secretary_block.blocked_id = secretary.id
                 left join posts p on p.club_id = c.id and p.post_kind = 'CLUB' and p.status = 'PUBLISHED'
+                left join user_blocks post_block on post_block.blocker_id = ? and post_block.blocked_id = p.user_id
                 where c.id = ?
-                group by c.id, c.name, c.description, c.category, president.name
-                """, JdbcResponseMapper.INSTANCE, clubId);
+                group by c.id, c.name, c.description, c.category, president.name, president_block.blocked_id
+                """, JdbcResponseMapper.INSTANCE, currentUserId, currentUserId, currentUserId, currentUserId, clubId);
     }
 
     @GetMapping("/clubs/{clubId}/members")
     public List<Map<String, Object>> findClubMembers(@PathVariable Long clubId) {
+        Long currentUserId = AuthContext.currentMemberIdOrNull();
         return jdbcTemplate.query("""
                 select cm.id, cm.club_role, cm.joined_at, u.id as user_id, u.name,
                        u.admission_year, u.job_title, m.name as major_name,
@@ -301,19 +360,22 @@ public class UserFeatureController {
                 left join companies co on co.id = u.company_id
                 left join industries i on i.id = u.industry_id
                 where cm.club_id = ? and cm.left_at is null
+                  and not exists (select 1 from user_blocks ub where ub.blocker_id = ? and ub.blocked_id = u.id)
                 order by case cm.club_role when 'PRESIDENT' then 1 when 'SECRETARY' then 2 else 3 end, u.name
-                """, JdbcResponseMapper.INSTANCE, clubId);
+                """, JdbcResponseMapper.INSTANCE, clubId, currentUserId);
     }
 
     @GetMapping("/clubs/{clubId}/posts")
     public List<Map<String, Object>> findClubPosts(@PathVariable Long clubId) {
+        Long currentUserId = AuthContext.currentMemberIdOrNull();
         return jdbcTemplate.query("""
                 select p.id, p.title, p.body, p.thumbnail_url, p.created_at, u.name as author_name
                 from posts p
                 join users u on u.id = p.user_id
                 where p.club_id = ? and p.post_kind = 'CLUB' and p.status = 'PUBLISHED'
+                  and not exists (select 1 from user_blocks ub where ub.blocker_id = ? and ub.blocked_id = p.user_id)
                 order by p.id desc
-                """, JdbcResponseMapper.INSTANCE, clubId);
+                """, JdbcResponseMapper.INSTANCE, clubId, currentUserId);
     }
 
     @GetMapping("/clubs/{clubId}/posting-permission")
@@ -367,6 +429,7 @@ public class UserFeatureController {
     @GetMapping("/posts/recent")
     public List<Map<String, Object>> findRecentPosts(@RequestParam(required = false) Integer size) {
         int limit = Math.min(Math.max(size == null ? 5 : size, 1), 20);
+        Long currentUserId = AuthContext.currentMemberIdOrNull();
         return jdbcTemplate.query("""
                 select p.id, p.title, p.body, p.thumbnail_url, p.created_at, p.post_kind,
                        coalesce(u.name, a.name) as author_name,
@@ -380,9 +443,10 @@ public class UserFeatureController {
                 where p.status = 'PUBLISHED'
                   and p.post_kind in ('NOTICE', 'NEWS', 'CLUB', 'BUSINESS')
                   and (p.post_kind <> 'CLUB' or p.club_id is not null)
+                  and not exists (select 1 from user_blocks ub where ub.blocker_id = ? and ub.blocked_id = p.user_id)
                 order by p.created_at desc, p.id desc
                 limit ?
-                """, JdbcResponseMapper.INSTANCE, limit);
+                """, JdbcResponseMapper.INSTANCE, currentUserId, limit);
     }
 
     @PostMapping("/business-posts")
@@ -462,6 +526,7 @@ public class UserFeatureController {
 
     private CursorPageResponse<Map<String, Object>> findPosts(
             String kind, Long cursor, Integer size, Long industryId) {
+        Long currentUserId = AuthContext.currentMemberIdOrNull();
         List<Map<String, Object>> rows = jdbcTemplate.query("""
                 select p.id, p.title, p.body, p.thumbnail_url, p.created_at,
                        coalesce(u.name, a.name) as author_name,
@@ -474,10 +539,11 @@ public class UserFeatureController {
                   and p.post_kind = ?
                   and (? is null or p.id < ?)
                   and (? is null or p.industry_id = ?)
+                  and not exists (select 1 from user_blocks ub where ub.blocker_id = ? and ub.blocked_id = p.user_id)
                 order by p.id desc
                 limit ?
                 """, JdbcResponseMapper.INSTANCE, kind, cursor, cursor, industryId, industryId,
-                CursorPageFactory.queryLimit(size));
+                currentUserId, CursorPageFactory.queryLimit(size));
 
         return CursorPageFactory.from(rows, size);
     }
@@ -518,22 +584,34 @@ public class UserFeatureController {
             boolean phonePublic,
             String email,
             boolean emailPublic,
+            @Size(max = 50) String homeZipcode,
             String homeAddress1,
             String homeAddress2,
+            boolean homeAddressPublic,
             Long companyId,
+            Long industryId,
+            @Size(max = 50) String workZipcode,
+            @Size(max = 255) String workAddress1,
+            @Size(max = 255) String workAddress2,
             @Size(max = 255) String jobTitle,
             List<Long> hobbyIds,
             List<@Size(max = 1000) String> webLinks,
             @Size(max = 500) String prText) {
     }
 
+    public record PreferenceUpdateRequest(
+            boolean notificationEnabled,
+            boolean phonePublic,
+            boolean emailPublic,
+            boolean homeAddressPublic) {
+    }
+
     public record CompanyCreateRequest(
-            @NotBlank @Size(max = 255) String name,
-            @Size(max = 50) String workZipcode,
-            @Size(max = 255) String workAddress1,
-            @Size(max = 255) String workAddress2,
-            @NotNull Long industryId,
-            @Size(max = 1000) String description) {
+            @NotBlank @Size(max = 255) String name) {
+    }
+
+    public record HobbyCreateRequest(
+            @NotBlank @Size(max = 50) String name) {
     }
 
     public record MemberApplicationRequest(

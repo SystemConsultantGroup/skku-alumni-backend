@@ -42,6 +42,22 @@ public class ReferenceDataController {
                 group by h.id, h.name
                 order by member_count desc, h.name
                 """, JdbcResponseMapper.INSTANCE));
+        response.put("regions", jdbcTemplate.queryForList("""
+                select region from (
+                    select distinct substring_index(trim(work_address1), ' ', 1) as region
+                    from companies where work_address1 is not null and trim(work_address1) <> ''
+                    union
+                    select distinct substring_index(trim(work_address1), ' ', 1) as region
+                    from users where work_address1 is not null and trim(work_address1) <> ''
+                    union
+                    select distinct substring_index(trim(home_address1), ' ', 1) as region
+                    from users
+                    where home_address_public = true
+                      and home_address1 is not null and trim(home_address1) <> ''
+                ) regions
+                where region <> ''
+                order by region
+                """, String.class));
         response.put("officerTerms", jdbcTemplate.query("""
                 select id, generation, phase, started_at, ended_at, current_term
                 from officer_terms
