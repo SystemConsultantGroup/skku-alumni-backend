@@ -40,10 +40,14 @@ public class SecurityConfig {
                         .hasAnyRole(AuthScope.MEMBER.name(), AuthScope.ADMIN.name())
                         .requestMatchers("/api/v1/auth/**").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/member-applications").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/v1/clubs/*/posting-permission")
+                        .hasRole(AuthScope.MEMBER.name())
+                        .requestMatchers("/api/v1/post-images", "/api/v1/post-images/**")
+                        .hasAnyRole(AuthScope.MEMBER.name(), AuthScope.ADMIN.name())
                         .requestMatchers(HttpMethod.GET,
                                 "/api/v1/reference-data",
                                 "/api/v1/members",
-                                "/api/v1/community/posts",
+                                "/api/v1/posts/recent",
                                 "/api/v1/clubs",
                                 "/api/v1/clubs/**",
                                 "/api/v1/notices",

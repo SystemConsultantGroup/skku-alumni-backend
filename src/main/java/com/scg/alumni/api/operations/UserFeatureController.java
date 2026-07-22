@@ -1,6 +1,7 @@
 package com.scg.alumni.api.operations;
 
 import com.scg.alumni.api.common.CursorPageResponse;
+import com.scg.alumni.api.common.MarkdownImageExtractor;
 import com.scg.alumni.global.security.AuthContext;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
@@ -14,7 +15,9 @@ import java.util.Locale;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.simple.SimpleJdbcInsert;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.http.HttpStatus;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -25,6 +28,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
 
 @RestController
 @RequiredArgsConstructor
@@ -304,12 +308,38 @@ public class UserFeatureController {
     @GetMapping("/clubs/{clubId}/posts")
     public List<Map<String, Object>> findClubPosts(@PathVariable Long clubId) {
         return jdbcTemplate.query("""
-                select p.id, p.title, p.body, p.created_at, u.name as author_name
+                select p.id, p.title, p.body, p.thumbnail_url, p.created_at, u.name as author_name
                 from posts p
                 join users u on u.id = p.user_id
                 where p.club_id = ? and p.post_kind = 'CLUB' and p.status = 'PUBLISHED'
                 order by p.id desc
                 """, JdbcResponseMapper.INSTANCE, clubId);
+    }
+
+    @GetMapping("/clubs/{clubId}/posting-permission")
+    public Map<String, Object> findClubPostingPermission(@PathVariable Long clubId) {
+        return Map.of("canPost", canManageClub(clubId, AuthContext.currentMemberId()));
+    }
+
+    @PostMapping("/clubs/{clubId}/posts")
+    @Transactional
+    public Map<String, Object> createClubPost(
+            @PathVariable Long clubId,
+            @Valid @RequestBody ClubPostCreateRequest request) {
+        Long currentUserId = AuthContext.currentMemberId();
+        if (!canManageClub(clubId, currentUserId)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "회장과 총무만 공지/뉴스를 작성할 수 있습니다.");
+        }
+
+        jdbcTemplate.update("""
+                insert into posts (
+                    user_id, title, body, thumbnail_url, status, post_kind, club_id, created_at, updated_at
+                ) values (?, ?, ?, ?, 'PUBLISHED', 'CLUB', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """, currentUserId, request.title().trim(), request.body(),
+                MarkdownImageExtractor.firstImageUrl(request.body()), clubId);
+
+        Long id = jdbcTemplate.queryForObject("select max(id) from posts", Long.class);
+        return Map.of("id", id);
     }
 
     @GetMapping("/notices")
@@ -332,6 +362,52 @@ public class UserFeatureController {
             @RequestParam(required = false) Integer size,
             @RequestParam(required = false) Long industryId) {
         return findPosts("BUSINESS", cursor, size, industryId);
+    }
+
+    @GetMapping("/posts/recent")
+    public List<Map<String, Object>> findRecentPosts(@RequestParam(required = false) Integer size) {
+        int limit = Math.min(Math.max(size == null ? 5 : size, 1), 20);
+        return jdbcTemplate.query("""
+                select p.id, p.title, p.body, p.thumbnail_url, p.created_at, p.post_kind,
+                       coalesce(u.name, a.name) as author_name,
+                       p.industry_id, i.name as industry_name,
+                       p.club_id, c.name as club_name, c.category as club_category
+                from posts p
+                left join users u on u.id = p.user_id
+                left join admins a on a.id = p.admin_id
+                left join industries i on i.id = p.industry_id
+                left join clubs c on c.id = p.club_id
+                where p.status = 'PUBLISHED'
+                  and p.post_kind in ('NOTICE', 'NEWS', 'CLUB', 'BUSINESS')
+                  and (p.post_kind <> 'CLUB' or p.club_id is not null)
+                order by p.created_at desc, p.id desc
+                limit ?
+                """, JdbcResponseMapper.INSTANCE, limit);
+    }
+
+    @PostMapping("/business-posts")
+    @Transactional
+    public Map<String, Object> createBusinessPost(@Valid @RequestBody BusinessPostCreateRequest request) {
+        Integer industryCount = jdbcTemplate.queryForObject(
+                "select count(*) from industries where id = ?", Integer.class, request.industryId());
+        if (industryCount == null || industryCount == 0) {
+            throw new IllegalArgumentException("존재하지 않는 분야입니다.");
+        }
+
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("user_id", AuthContext.currentMemberId());
+        values.put("title", request.title().trim());
+        values.put("body", request.body());
+        values.put("thumbnail_url", MarkdownImageExtractor.firstImageUrl(request.body()));
+        values.put("status", "PUBLISHED");
+        values.put("post_kind", "BUSINESS");
+        values.put("industry_id", request.industryId());
+
+        Number id = new SimpleJdbcInsert(jdbcTemplate)
+                .withTableName("posts")
+                .usingGeneratedKeyColumns("id")
+                .executeAndReturnKey(values);
+        return Map.of("id", id.longValue());
     }
 
     @PostMapping("/reports")
@@ -387,10 +463,12 @@ public class UserFeatureController {
     private CursorPageResponse<Map<String, Object>> findPosts(
             String kind, Long cursor, Integer size, Long industryId) {
         List<Map<String, Object>> rows = jdbcTemplate.query("""
-                select p.id, p.title, p.body, p.thumbnail_url, p.created_at, u.name as author_name,
+                select p.id, p.title, p.body, p.thumbnail_url, p.created_at,
+                       coalesce(u.name, a.name) as author_name,
                        p.industry_id, i.name as industry_name
                 from posts p
-                join users u on u.id = p.user_id
+                left join users u on u.id = p.user_id
+                left join admins a on a.id = p.admin_id
                 left join industries i on i.id = p.industry_id
                 where p.status = 'PUBLISHED'
                   and p.post_kind = ?
@@ -402,6 +480,16 @@ public class UserFeatureController {
                 CursorPageFactory.queryLimit(size));
 
         return CursorPageFactory.from(rows, size);
+    }
+
+    private boolean canManageClub(Long clubId, Long userId) {
+        Integer count = jdbcTemplate.queryForObject("""
+                select count(*)
+                from club_members
+                where club_id = ? and user_id = ? and left_at is null
+                  and club_role in ('PRESIDENT', 'MANAGER', 'SECRETARY')
+                """, Integer.class, clubId, userId);
+        return count != null && count > 0;
     }
 
     private void logProfileChange(String fieldName, Object oldValue, Object newValue) {
@@ -469,5 +557,16 @@ public class UserFeatureController {
 
     public record BlockUserRequest(
             @NotNull Long blockedId) {
+    }
+
+    public record ClubPostCreateRequest(
+            @NotBlank @Size(max = 255) String title,
+            @NotBlank String body) {
+    }
+
+    public record BusinessPostCreateRequest(
+            @NotBlank @Size(max = 255) String title,
+            @NotBlank String body,
+            @NotNull Long industryId) {
     }
 }
