@@ -51,8 +51,12 @@ public class SecurityConfig {
                                 "/api/v1/clubs",
                                 "/api/v1/clubs/**",
                                 "/api/v1/notices",
+                                "/api/v1/notices/*",
                                 "/api/v1/news",
-                                "/api/v1/business-posts"
+                                "/api/v1/news/*",
+                                "/api/v1/official-posts/*",
+                                "/api/v1/business-posts",
+                                "/api/v1/business-posts/*"
                         ).permitAll()
                         .requestMatchers("/api/v1/admin/**").hasRole(AuthScope.ADMIN.name())
                         .requestMatchers("/api/v1/**").hasRole(AuthScope.MEMBER.name())

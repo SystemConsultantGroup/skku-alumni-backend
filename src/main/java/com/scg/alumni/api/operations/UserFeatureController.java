@@ -378,6 +378,21 @@ public class UserFeatureController {
                 """, JdbcResponseMapper.INSTANCE, clubId, currentUserId);
     }
 
+    @GetMapping("/clubs/{clubId}/posts/{postId}")
+    public Map<String, Object> findClubPost(
+            @PathVariable Long clubId,
+            @PathVariable Long postId) {
+        Long currentUserId = AuthContext.currentMemberIdOrNull();
+        List<Map<String, Object>> rows = jdbcTemplate.query("""
+                select p.id, p.title, p.body, p.thumbnail_url, p.created_at, u.name as author_name
+                from posts p
+                join users u on u.id = p.user_id
+                where p.id = ? and p.club_id = ? and p.post_kind = 'CLUB' and p.status = 'PUBLISHED'
+                  and not exists (select 1 from user_blocks ub where ub.blocker_id = ? and ub.blocked_id = p.user_id)
+                """, JdbcResponseMapper.INSTANCE, postId, clubId, currentUserId);
+        return requirePost(rows);
+    }
+
     @GetMapping("/clubs/{clubId}/posting-permission")
     public Map<String, Object> findClubPostingPermission(@PathVariable Long clubId) {
         return Map.of("canPost", canManageClub(clubId, AuthContext.currentMemberId()));
@@ -411,11 +426,36 @@ public class UserFeatureController {
         return findPosts("NOTICE", cursor, size, null);
     }
 
+    @GetMapping("/notices/{id}")
+    public Map<String, Object> findNotice(@PathVariable Long id) {
+        return findPost("NOTICE", id);
+    }
+
     @GetMapping("/news")
     public CursorPageResponse<Map<String, Object>> findNews(
             @RequestParam(required = false) Long cursor,
             @RequestParam(required = false) Integer size) {
         return findPosts("NEWS", cursor, size, null);
+    }
+
+    @GetMapping("/news/{id}")
+    public Map<String, Object> findNewsPost(@PathVariable Long id) {
+        return findPost("NEWS", id);
+    }
+
+    @GetMapping("/official-posts/{id}")
+    public Map<String, Object> findOfficialPost(@PathVariable Long id) {
+        Long currentUserId = AuthContext.currentMemberIdOrNull();
+        List<Map<String, Object>> rows = jdbcTemplate.query("""
+                select p.id, p.title, p.body, p.thumbnail_url, p.created_at, p.post_kind,
+                       coalesce(u.name, a.name) as author_name
+                from posts p
+                left join users u on u.id = p.user_id
+                left join admins a on a.id = p.admin_id
+                where p.id = ? and p.post_kind in ('NOTICE', 'NEWS') and p.status = 'PUBLISHED'
+                  and not exists (select 1 from user_blocks ub where ub.blocker_id = ? and ub.blocked_id = p.user_id)
+                """, JdbcResponseMapper.INSTANCE, id, currentUserId);
+        return requirePost(rows);
     }
 
     @GetMapping("/business-posts")
@@ -424,6 +464,11 @@ public class UserFeatureController {
             @RequestParam(required = false) Integer size,
             @RequestParam(required = false) Long industryId) {
         return findPosts("BUSINESS", cursor, size, industryId);
+    }
+
+    @GetMapping("/business-posts/{id}")
+    public Map<String, Object> findBusinessPost(@PathVariable Long id) {
+        return findPost("BUSINESS", id);
     }
 
     @GetMapping("/posts/recent")
@@ -546,6 +591,29 @@ public class UserFeatureController {
                 currentUserId, CursorPageFactory.queryLimit(size));
 
         return CursorPageFactory.from(rows, size);
+    }
+
+    private Map<String, Object> findPost(String kind, Long id) {
+        Long currentUserId = AuthContext.currentMemberIdOrNull();
+        List<Map<String, Object>> rows = jdbcTemplate.query("""
+                select p.id, p.title, p.body, p.thumbnail_url, p.created_at,
+                       coalesce(u.name, a.name) as author_name,
+                       p.industry_id, i.name as industry_name
+                from posts p
+                left join users u on u.id = p.user_id
+                left join admins a on a.id = p.admin_id
+                left join industries i on i.id = p.industry_id
+                where p.id = ? and p.post_kind = ? and p.status = 'PUBLISHED'
+                  and not exists (select 1 from user_blocks ub where ub.blocker_id = ? and ub.blocked_id = p.user_id)
+                """, JdbcResponseMapper.INSTANCE, id, kind, currentUserId);
+        return requirePost(rows);
+    }
+
+    private Map<String, Object> requirePost(List<Map<String, Object>> rows) {
+        if (rows.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "게시글을 찾을 수 없습니다.");
+        }
+        return rows.get(0);
     }
 
     private boolean canManageClub(Long clubId, Long userId) {
