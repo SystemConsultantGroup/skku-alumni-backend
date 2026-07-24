@@ -24,6 +24,15 @@ public final class AuthContext {
         return principal.id();
     }
 
+    public static Long currentMemberIdOrNull() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null || !(authentication.getPrincipal() instanceof AuthenticatedPrincipal principal)
+                || principal.scope() != AuthScope.MEMBER) {
+            return null;
+        }
+        return principal.id();
+    }
+
     public static Long currentAdminId() {
         AuthenticatedPrincipal principal = current();
         if (principal.scope() != AuthScope.ADMIN) {

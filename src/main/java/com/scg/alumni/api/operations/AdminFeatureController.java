@@ -1,6 +1,7 @@
 package com.scg.alumni.api.operations;
 
 import com.scg.alumni.api.common.CursorPageResponse;
+import com.scg.alumni.api.common.MarkdownImageExtractor;
 import com.scg.alumni.global.security.AuthContext;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
@@ -11,11 +12,13 @@ import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.simple.SimpleJdbcInsert;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -305,6 +308,105 @@ public class AdminFeatureController {
                 join admin_roles ar on ar.id = a.admin_role_id
                 order by a.id
                 """, JdbcResponseMapper.INSTANCE);
+    }
+
+    @GetMapping("/posts")
+    public CursorPageResponse<Map<String, Object>> findPosts(
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String postKind,
+            @RequestParam(required = false) String status,
+            @RequestParam(required = false) Long cursor,
+            @RequestParam(required = false) Integer size
+    ) {
+        String normalizedKeyword = normalizeLike(keyword);
+        String normalizedPostKind = normalizeUpper(postKind);
+        String normalizedStatus = normalizeUpper(status);
+        List<Map<String, Object>> rows = jdbcTemplate.query("""
+                select p.id, p.title, p.body, p.thumbnail_url, p.post_kind, p.status, p.created_at, p.updated_at,
+                       coalesce(u.name, a.name) as author_name, i.name as industry_name,
+                       c.id as club_id, c.name as club_name, c.category as club_category,
+                       count(r.id) as report_count
+                from posts p
+                left join users u on u.id = p.user_id
+                left join admins a on a.id = p.admin_id
+                left join industries i on i.id = p.industry_id
+                left join clubs c on c.id = p.club_id
+                left join reports r on r.target_post_id = p.id
+                where (? is null or p.id < ?)
+                  and (? is null or lower(p.title) like ? or lower(coalesce(p.body, '')) like ?
+                       or lower(coalesce(u.name, a.name)) like ?)
+                  and (? is null or p.post_kind = ?)
+                  and (? is null or p.status = ?)
+                group by p.id, p.title, p.body, p.thumbnail_url, p.post_kind, p.status, p.created_at, p.updated_at,
+                         u.name, a.name, i.name, c.id, c.name, c.category
+                order by p.id desc
+                limit ?
+                """, JdbcResponseMapper.INSTANCE,
+                cursor, cursor,
+                normalizedKeyword, normalizedKeyword, normalizedKeyword, normalizedKeyword,
+                normalizedPostKind, normalizedPostKind,
+                normalizedStatus, normalizedStatus,
+                CursorPageFactory.queryLimit(size));
+        return CursorPageFactory.from(rows, size);
+    }
+
+    @PostMapping("/posts")
+    @Transactional
+    public Map<String, Object> createOfficialPost(@Valid @RequestBody OfficialPostWriteRequest request) {
+        String postKind = normalizeRequiredStatus(request.postKind(), "NOTICE", "NEWS");
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("admin_id", AuthContext.currentAdminId());
+        values.put("title", request.title().trim());
+        values.put("body", request.body());
+        values.put("thumbnail_url", MarkdownImageExtractor.firstImageUrl(request.body()));
+        values.put("status", "PUBLISHED");
+        values.put("post_kind", postKind);
+
+        Number id = new SimpleJdbcInsert(jdbcTemplate)
+                .withTableName("posts")
+                .usingGeneratedKeyColumns("id")
+                .executeAndReturnKey(values);
+        audit("CREATE_OFFICIAL_POST", "post", id.longValue());
+        return Map.of("id", id.longValue(), "status", "PUBLISHED");
+    }
+
+    @PatchMapping("/posts/{id}")
+    @Transactional
+    public Map<String, Object> updateOfficialPost(
+            @PathVariable Long id,
+            @Valid @RequestBody OfficialPostWriteRequest request
+    ) {
+        String postKind = normalizeRequiredStatus(request.postKind(), "NOTICE", "NEWS");
+        int updated = jdbcTemplate.update("""
+                update posts
+                set title = ?, body = ?, thumbnail_url = ?, post_kind = ?, updated_at = CURRENT_TIMESTAMP
+                where id = ? and post_kind in ('NOTICE', 'NEWS')
+                """, request.title().trim(), request.body(),
+                MarkdownImageExtractor.firstImageUrl(request.body()), postKind, id);
+        if (updated == 0) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "수정할 공지/뉴스를 찾을 수 없습니다.");
+        }
+        audit("UPDATE_OFFICIAL_POST", "post", id);
+        return Map.of("id", id, "status", "UPDATED");
+    }
+
+    @PatchMapping("/posts/{id}/status")
+    @Transactional
+    public Map<String, Object> updatePostStatus(
+            @PathVariable Long id,
+            @Valid @RequestBody StatusUpdateRequest request
+    ) {
+        String status = normalizeRequiredStatus(request.status(), "PUBLISHED", "HIDDEN", "DELETED");
+        int updated = jdbcTemplate.update("""
+                update posts
+                set status = ?, updated_at = CURRENT_TIMESTAMP
+                where id = ?
+                """, status, id);
+        if (updated == 0) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "게시글을 찾을 수 없습니다.");
+        }
+        audit("UPDATE_POST_STATUS", "post", id);
+        return Map.of("id", id, "status", status);
     }
 
     @GetMapping("/audit-logs")
@@ -613,6 +715,13 @@ public class AdminFeatureController {
 
     public record StatusUpdateRequest(
             @NotBlank String status
+    ) {
+    }
+
+    public record OfficialPostWriteRequest(
+            @NotBlank String postKind,
+            @NotBlank String title,
+            @NotBlank String body
     ) {
     }
 

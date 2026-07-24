@@ -77,6 +77,18 @@ public class Member extends BaseTimeEntity {
 
     private String homeAddress2;
 
+    private String workZipcode;
+
+    private String workAddress1;
+
+    private String workAddress2;
+
+    @Column(nullable = false)
+    private boolean homeAddressPublic;
+
+    @Column(nullable = false)
+    private boolean notificationEnabled;
+
     private String phone;
 
     private String email;
