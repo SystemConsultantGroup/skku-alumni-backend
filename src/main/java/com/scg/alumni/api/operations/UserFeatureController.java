@@ -337,7 +337,7 @@ public class UserFeatureController {
                 left join club_members cm on cm.club_id = c.id and cm.left_at is null
                 left join user_blocks member_block on member_block.blocker_id = ? and member_block.blocked_id = cm.user_id
                 left join club_members secretary_member on secretary_member.club_id = c.id
-                       and secretary_member.left_at is null and secretary_member.club_role = 'SECRETARY'
+                       and secretary_member.left_at is null and secretary_member.club_role = 'MANAGER'
                 left join users secretary on secretary.id = secretary_member.user_id
                 left join user_blocks secretary_block on secretary_block.blocker_id = ? and secretary_block.blocked_id = secretary.id
                 left join posts p on p.club_id = c.id and p.post_kind = 'CLUB' and p.status = 'PUBLISHED'
@@ -361,7 +361,7 @@ public class UserFeatureController {
                 left join industries i on i.id = u.industry_id
                 where cm.club_id = ? and cm.left_at is null
                   and not exists (select 1 from user_blocks ub where ub.blocker_id = ? and ub.blocked_id = u.id)
-                order by case cm.club_role when 'PRESIDENT' then 1 when 'SECRETARY' then 2 else 3 end, u.name
+                order by case cm.club_role when 'PRESIDENT' then 1 when 'MANAGER' then 2 else 3 end, u.name
                 """, JdbcResponseMapper.INSTANCE, clubId, currentUserId);
     }
 
@@ -621,7 +621,7 @@ public class UserFeatureController {
                 select count(*)
                 from club_members
                 where club_id = ? and user_id = ? and left_at is null
-                  and club_role in ('PRESIDENT', 'MANAGER', 'SECRETARY')
+                  and club_role in ('PRESIDENT', 'MANAGER')
                 """, Integer.class, clubId, userId);
         return count != null && count > 0;
     }
