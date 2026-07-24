@@ -116,6 +116,24 @@ public class AuthController {
         return AuthContext.current();
     }
 
+    @GetMapping("/member/me")
+    public AuthenticatedPrincipal memberMe() {
+        AuthenticatedPrincipal principal = AuthContext.current();
+        if (principal.scope() != AuthScope.MEMBER) {
+            throw unauthorized();
+        }
+        return principal;
+    }
+
+    @GetMapping("/admin/me")
+    public AuthenticatedPrincipal adminMe() {
+        AuthenticatedPrincipal principal = AuthContext.current();
+        if (principal.scope() != AuthScope.ADMIN) {
+            throw unauthorized();
+        }
+        return principal;
+    }
+
     private AuthResponse refresh(AuthScope scope, HttpServletRequest request, HttpServletResponse response) {
         String refreshToken = cookieValue(request, authProperties.refreshCookieName(scope));
         if (refreshToken == null) {

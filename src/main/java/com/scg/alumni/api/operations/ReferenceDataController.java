@@ -24,9 +24,21 @@ public class ReferenceDataController {
                 order by name
                 """, JdbcResponseMapper.INSTANCE));
         response.put("industries", jdbcTemplate.query("""
-                select id, name
-                from industries
-                order by name
+                select i.id, i.name,
+                       (
+                           select count(*)
+                           from users u
+                           where u.industry_id = i.id
+                       ) as member_count,
+                       (
+                           select count(*)
+                           from posts p
+                           where p.industry_id = i.id
+                             and p.post_kind = 'BUSINESS'
+                             and p.status = 'PUBLISHED'
+                       ) as business_post_count
+                from industries i
+                order by i.name
                 """, JdbcResponseMapper.INSTANCE));
         response.put("companies", jdbcTemplate.query("""
                 select c.id, c.name, c.work_zipcode, c.work_address1, c.work_address2,
