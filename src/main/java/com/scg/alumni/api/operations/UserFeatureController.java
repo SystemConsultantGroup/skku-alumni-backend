@@ -25,6 +25,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -297,29 +298,58 @@ public class UserFeatureController {
                     select c.id, c.name, c.description, c.category,
                            case when exists (select 1 from user_blocks ub where ub.blocker_id = ? and ub.blocked_id = u.id)
                                 then '차단한 사용자' else u.name end as president_name,
+                           case when manager_block.blocked_id is not null
+                                then '차단한 사용자' else manager.name end as secretary_name,
                            count(case when blocked.blocked_id is null then cm.id end) as member_count
                     from clubs c
                     left join users u on u.id = c.president_user_id
+                    left join users manager on manager.id = coalesce(
+                           c.manager_user_id,
+                           (
+                               select min(legacy_manager.user_id)
+                               from club_members legacy_manager
+                               where legacy_manager.club_id = c.id
+                                 and legacy_manager.club_role = 'MANAGER'
+                                 and legacy_manager.left_at is null
+                                 and legacy_manager.user_id <> c.president_user_id
+                           )
+                    )
+                    left join user_blocks manager_block on manager_block.blocker_id = ? and manager_block.blocked_id = manager.id
                     left join club_members cm on cm.club_id = c.id and cm.left_at is null
                     left join user_blocks blocked on blocked.blocker_id = ? and blocked.blocked_id = cm.user_id
                     where c.category = ?
-                    group by c.id, c.name, c.description, c.category, u.name
+                    group by c.id, c.name, c.description, c.category, u.name, manager.name, manager_block.blocked_id
                     order by c.id desc
-                    """, JdbcResponseMapper.INSTANCE, currentUserId, currentUserId, category.toUpperCase(Locale.ROOT));
+                    """, JdbcResponseMapper.INSTANCE, currentUserId, currentUserId, currentUserId,
+                    category.toUpperCase(Locale.ROOT));
         }
 
         return jdbcTemplate.query("""
                 select c.id, c.name, c.description, c.category,
                        case when exists (select 1 from user_blocks ub where ub.blocker_id = ? and ub.blocked_id = u.id)
                             then '차단한 사용자' else u.name end as president_name,
+                       case when manager_block.blocked_id is not null
+                            then '차단한 사용자' else manager.name end as secretary_name,
                        count(case when blocked.blocked_id is null then cm.id end) as member_count
                 from clubs c
                 left join users u on u.id = c.president_user_id
+                left join users manager on manager.id = coalesce(
+                       c.manager_user_id,
+                       (
+                           select min(legacy_manager.user_id)
+                           from club_members legacy_manager
+                           where legacy_manager.club_id = c.id
+                             and legacy_manager.club_role = 'MANAGER'
+                             and legacy_manager.left_at is null
+                             and legacy_manager.user_id <> c.president_user_id
+                       )
+                )
+                left join user_blocks manager_block on manager_block.blocker_id = ? and manager_block.blocked_id = manager.id
                 left join club_members cm on cm.club_id = c.id and cm.left_at is null
                 left join user_blocks blocked on blocked.blocker_id = ? and blocked.blocked_id = cm.user_id
-                group by c.id, c.name, c.description, c.category, u.name
+                group by c.id, c.name, c.description, c.category, u.name, manager.name, manager_block.blocked_id
                 order by c.id desc
-                """, JdbcResponseMapper.INSTANCE, currentUserId, currentUserId);
+                """, JdbcResponseMapper.INSTANCE, currentUserId, currentUserId, currentUserId);
     }
 
     @GetMapping("/clubs/{clubId}")
@@ -336,9 +366,17 @@ public class UserFeatureController {
                 left join user_blocks president_block on president_block.blocker_id = ? and president_block.blocked_id = president.id
                 left join club_members cm on cm.club_id = c.id and cm.left_at is null
                 left join user_blocks member_block on member_block.blocker_id = ? and member_block.blocked_id = cm.user_id
-                left join club_members secretary_member on secretary_member.club_id = c.id
-                       and secretary_member.left_at is null and secretary_member.club_role = 'MANAGER'
-                left join users secretary on secretary.id = secretary_member.user_id
+                left join users secretary on secretary.id = coalesce(
+                       c.manager_user_id,
+                       (
+                           select min(legacy_manager.user_id)
+                           from club_members legacy_manager
+                           where legacy_manager.club_id = c.id
+                             and legacy_manager.club_role = 'MANAGER'
+                             and legacy_manager.left_at is null
+                             and legacy_manager.user_id <> c.president_user_id
+                       )
+                )
                 left join user_blocks secretary_block on secretary_block.blocker_id = ? and secretary_block.blocked_id = secretary.id
                 left join posts p on p.club_id = c.id and p.post_kind = 'CLUB' and p.status = 'PUBLISHED'
                 left join user_blocks post_block on post_block.blocker_id = ? and post_block.blocked_id = p.user_id
@@ -363,6 +401,181 @@ public class UserFeatureController {
                   and not exists (select 1 from user_blocks ub where ub.blocker_id = ? and ub.blocked_id = u.id)
                 order by case cm.club_role when 'PRESIDENT' then 1 when 'MANAGER' then 2 else 3 end, u.name
                 """, JdbcResponseMapper.INSTANCE, clubId, currentUserId);
+    }
+
+    @GetMapping("/clubs/{clubId}/membership")
+    public Map<String, Object> findClubMembership(@PathVariable Long clubId) {
+        Long currentUserId = AuthContext.currentMemberIdOrNull();
+        if (currentUserId == null) {
+            return Map.of(
+                    "authenticated", false,
+                    "isMember", false,
+                    "applicationStatus", "",
+                    "role", "",
+                    "canManage", false,
+                    "canAssignPresident", false,
+                    "pendingCount", 0);
+        }
+
+        String role = findClubRole(clubId, currentUserId);
+        String applicationStatus = jdbcTemplate.query("""
+                select status
+                from club_join_applications
+                where club_id = ? and user_id = ?
+                """, resultSet -> resultSet.next() ? resultSet.getString("status") : "", clubId, currentUserId);
+        boolean canManage = "PRESIDENT".equals(role) || "MANAGER".equals(role);
+        Integer pendingCount = canManage ? jdbcTemplate.queryForObject("""
+                select count(*) from club_join_applications
+                where club_id = ? and status = 'PENDING'
+                """, Integer.class, clubId) : 0;
+
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("authenticated", true);
+        response.put("isMember", !role.isEmpty());
+        response.put("applicationStatus", applicationStatus);
+        response.put("role", role);
+        response.put("canManage", canManage);
+        response.put("canAssignPresident", "PRESIDENT".equals(role));
+        response.put("pendingCount", pendingCount == null ? 0 : pendingCount);
+        return response;
+    }
+
+    @PostMapping("/clubs/{clubId}/applications")
+    @Transactional
+    public Map<String, Object> applyToClub(@PathVariable Long clubId) {
+        Long currentUserId = AuthContext.currentMemberId();
+        lockClub(clubId);
+        if (isActiveClubMember(clubId, currentUserId)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "이미 가입한 동호회입니다.");
+        }
+
+        int updated = jdbcTemplate.update("""
+                update club_join_applications
+                set status = 'PENDING', applied_at = CURRENT_TIMESTAMP, reviewed_at = null,
+                    reviewed_by_user_id = null, updated_at = CURRENT_TIMESTAMP
+                where club_id = ? and user_id = ? and status <> 'PENDING'
+                """, clubId, currentUserId);
+        if (updated == 0) {
+            try {
+                jdbcTemplate.update("""
+                        insert into club_join_applications (
+                            club_id, user_id, status, applied_at, created_at, updated_at
+                        ) values (?, ?, 'PENDING', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        """, clubId, currentUserId);
+            } catch (DuplicateKeyException exception) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT, "이미 처리 대기 중인 신청입니다.");
+            }
+        }
+        return Map.of("status", "PENDING");
+    }
+
+    @GetMapping("/clubs/{clubId}/applications")
+    public List<Map<String, Object>> findClubApplications(@PathVariable Long clubId) {
+        Long currentUserId = AuthContext.currentMemberId();
+        requireClubManager(clubId, currentUserId);
+        return jdbcTemplate.query("""
+                select a.id, a.status, a.applied_at, u.id as user_id, u.name,
+                       u.admission_year, m.name as major_name, co.name as company_name, u.job_title
+                from club_join_applications a
+                join users u on u.id = a.user_id
+                join majors m on m.id = u.major_id
+                left join companies co on co.id = u.company_id
+                where a.club_id = ? and a.status = 'PENDING'
+                order by a.applied_at, a.id
+                """, JdbcResponseMapper.INSTANCE, clubId);
+    }
+
+    @PatchMapping("/clubs/{clubId}/applications/{applicationId}")
+    @Transactional
+    public Map<String, Object> reviewClubApplication(
+            @PathVariable Long clubId,
+            @PathVariable Long applicationId,
+            @Valid @RequestBody ClubApplicationReviewRequest request) {
+        Long currentUserId = AuthContext.currentMemberId();
+        lockClub(clubId);
+        requireClubManager(clubId, currentUserId);
+        String decision = request.decision().trim().toUpperCase(Locale.ROOT);
+        if (!decision.equals("APPROVE") && !decision.equals("REJECT")) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "승인 또는 거절만 선택할 수 있습니다.");
+        }
+
+        List<Long> applicantIds = jdbcTemplate.queryForList("""
+                select user_id from club_join_applications
+                where id = ? and club_id = ? and status = 'PENDING'
+                """, Long.class, applicationId, clubId);
+        if (applicantIds.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "처리할 신청을 찾을 수 없습니다.");
+        }
+        Long applicantId = applicantIds.get(0);
+        if (decision.equals("APPROVE")) {
+            int reactivated = jdbcTemplate.update("""
+                    update club_members
+                    set club_role = 'MEMBER', joined_at = CURRENT_TIMESTAMP, left_at = null
+                    where club_id = ? and user_id = ?
+                    """, clubId, applicantId);
+            if (reactivated == 0) {
+                jdbcTemplate.update("""
+                        insert into club_members (club_id, user_id, club_role, joined_at)
+                        values (?, ?, 'MEMBER', CURRENT_TIMESTAMP)
+                        """, clubId, applicantId);
+            }
+        }
+        String status = decision.equals("APPROVE") ? "APPROVED" : "REJECTED";
+        jdbcTemplate.update("""
+                update club_join_applications
+                set status = ?, reviewed_at = CURRENT_TIMESTAMP, reviewed_by_user_id = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                where id = ?
+                """, status, currentUserId, applicationId);
+        return Map.of("status", status);
+    }
+
+    @PutMapping("/clubs/{clubId}/leadership/{role}")
+    @Transactional
+    public Map<String, Object> assignClubLeadership(
+            @PathVariable Long clubId,
+            @PathVariable String role,
+            @Valid @RequestBody ClubLeadershipRequest request) {
+        Long currentUserId = AuthContext.currentMemberId();
+        lockClub(clubId);
+        String requestedRole = role.trim().toUpperCase(Locale.ROOT);
+        String currentRole = findClubRole(clubId, currentUserId);
+        if (requestedRole.equals("PRESIDENT") && !"PRESIDENT".equals(currentRole)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "회장만 다음 회장을 지목할 수 있습니다.");
+        }
+        if (requestedRole.equals("MANAGER")
+                && !"PRESIDENT".equals(currentRole)
+                && !"MANAGER".equals(currentRole)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "회장과 매니저만 다음 매니저를 지목할 수 있습니다.");
+        }
+        if (!requestedRole.equals("PRESIDENT") && !requestedRole.equals("MANAGER")) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "변경할 수 없는 역할입니다.");
+        }
+        if (requestedRole.equals("PRESIDENT") && request.userId() == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "회장은 반드시 동호회 회원 중 1명이어야 합니다.");
+        }
+        if (request.userId() != null && !isActiveClubMember(clubId, request.userId())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "동호회 회원만 지목할 수 있습니다.");
+        }
+
+        Map<String, Object> leaders = jdbcTemplate.queryForObject("""
+                select president_user_id, manager_user_id from clubs where id = ?
+                """, JdbcResponseMapper.INSTANCE, clubId);
+        Long otherLeaderId = requestedRole.equals("PRESIDENT")
+                ? nullableLong(leaders.get("managerUserId"))
+                : nullableLong(leaders.get("presidentUserId"));
+        if (request.userId() != null && request.userId().equals(otherLeaderId)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "회장과 매니저는 서로 다른 회원이어야 합니다.");
+        }
+
+        String column = requestedRole.equals("PRESIDENT") ? "president_user_id" : "manager_user_id";
+        jdbcTemplate.update("update clubs set " + column + " = ?, updated_at = CURRENT_TIMESTAMP where id = ?",
+                request.userId(), clubId);
+        synchronizeClubRoles(clubId);
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("role", requestedRole);
+        response.put("userId", request.userId());
+        return response;
     }
 
     @GetMapping("/clubs/{clubId}/posts")
@@ -405,7 +618,7 @@ public class UserFeatureController {
             @Valid @RequestBody ClubPostCreateRequest request) {
         Long currentUserId = AuthContext.currentMemberId();
         if (!canManageClub(clubId, currentUserId)) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "회장과 총무만 공지/뉴스를 작성할 수 있습니다.");
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "회장과 매니저만 공지/뉴스를 작성할 수 있습니다.");
         }
 
         jdbcTemplate.update("""
@@ -617,13 +830,79 @@ public class UserFeatureController {
     }
 
     private boolean canManageClub(Long clubId, Long userId) {
+        String role = findClubRole(clubId, userId);
+        return "PRESIDENT".equals(role) || "MANAGER".equals(role);
+    }
+
+    private void requireClubManager(Long clubId, Long userId) {
+        if (!canManageClub(clubId, userId)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "회장과 매니저만 관리할 수 있습니다.");
+        }
+    }
+
+    private void lockClub(Long clubId) {
+        List<Long> ids = jdbcTemplate.queryForList(
+                "select id from clubs where id = ? for update", Long.class, clubId);
+        if (ids.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "동호회를 찾을 수 없습니다.");
+        }
+    }
+
+    private boolean isActiveClubMember(Long clubId, Long userId) {
         Integer count = jdbcTemplate.queryForObject("""
-                select count(*)
-                from club_members
+                select count(*) from club_members
                 where club_id = ? and user_id = ? and left_at is null
-                  and club_role in ('PRESIDENT', 'MANAGER')
                 """, Integer.class, clubId, userId);
         return count != null && count > 0;
+    }
+
+    private String findClubRole(Long clubId, Long userId) {
+        List<String> roles = jdbcTemplate.queryForList("""
+                select case
+                           when c.president_user_id = ? then 'PRESIDENT'
+                           when c.manager_user_id = ? then 'MANAGER'
+                           when c.manager_user_id is null
+                                and cm.club_role = 'MANAGER'
+                                and cm.user_id = (
+                                    select min(legacy_manager.user_id)
+                                    from club_members legacy_manager
+                                    where legacy_manager.club_id = c.id
+                                      and legacy_manager.club_role = 'MANAGER'
+                                      and legacy_manager.left_at is null
+                                )
+                           then 'MANAGER'
+                           when cm.id is not null then 'MEMBER'
+                           else ''
+                       end
+                from clubs c
+                left join club_members cm on cm.club_id = c.id and cm.user_id = ? and cm.left_at is null
+                where c.id = ?
+                """, String.class, userId, userId, userId, clubId);
+        return roles.isEmpty() ? "" : roles.get(0);
+    }
+
+    private void synchronizeClubRoles(Long clubId) {
+        jdbcTemplate.update("""
+                update club_members
+                set club_role = 'MEMBER'
+                where club_id = ? and left_at is null
+                """, clubId);
+        jdbcTemplate.update("""
+                update club_members
+                set club_role = 'PRESIDENT'
+                where club_id = ? and left_at is null
+                  and user_id = (select president_user_id from clubs where id = ?)
+                """, clubId, clubId);
+        jdbcTemplate.update("""
+                update club_members
+                set club_role = 'MANAGER'
+                where club_id = ? and left_at is null
+                  and user_id = (select manager_user_id from clubs where id = ?)
+                """, clubId, clubId);
+    }
+
+    private Long nullableLong(Object value) {
+        return value instanceof Number number ? number.longValue() : null;
     }
 
     private void logProfileChange(String fieldName, Object oldValue, Object newValue) {
@@ -708,6 +987,14 @@ public class UserFeatureController {
     public record ClubPostCreateRequest(
             @NotBlank @Size(max = 255) String title,
             @NotBlank String body) {
+    }
+
+    public record ClubApplicationReviewRequest(
+            @NotBlank String decision) {
+    }
+
+    public record ClubLeadershipRequest(
+            Long userId) {
     }
 
     public record BusinessPostCreateRequest(
