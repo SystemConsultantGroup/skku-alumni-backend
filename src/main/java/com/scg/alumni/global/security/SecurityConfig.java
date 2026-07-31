@@ -50,6 +50,8 @@ public class SecurityConfig {
                         .hasRole(AuthScope.MEMBER.name())
                         .requestMatchers("/api/v1/post-images", "/api/v1/post-images/**")
                         .hasAnyRole(AuthScope.MEMBER.name(), AuthScope.ADMIN.name())
+                        .requestMatchers("/api/v1/profile-images", "/api/v1/profile-images/**")
+                        .hasRole(AuthScope.MEMBER.name())
                         .requestMatchers(HttpMethod.GET,
                                 "/api/v1/reference-data",
                                 "/api/v1/members",
