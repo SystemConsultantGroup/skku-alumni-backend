@@ -341,6 +341,7 @@ public class AdminFeatureController {
             @RequestParam(required = false) String keyword,
             @RequestParam(required = false) String postKind,
             @RequestParam(required = false) String status,
+            @RequestParam(required = false) Boolean editable,
             @RequestParam(required = false) Long cursor,
             @RequestParam(required = false) Integer size
     ) {
@@ -349,7 +350,9 @@ public class AdminFeatureController {
         String normalizedStatus = normalizeUpper(status);
         List<Map<String, Object>> rows = jdbcTemplate.query("""
                 select p.id, p.title, p.body, p.thumbnail_url, p.post_kind, p.status, p.created_at, p.updated_at,
-                       coalesce(u.name, a.name) as author_name, i.name as industry_name,
+                       case when u.status = 'WITHDRAWN' then '탈퇴한 사용자'
+                            else coalesce(u.name, a.name) end as author_name,
+                       i.name as industry_name,
                        c.id as club_id, c.name as club_name, c.category as club_category,
                        count(r.id) as report_count
                 from posts p
@@ -363,8 +366,13 @@ public class AdminFeatureController {
                        or lower(coalesce(u.name, a.name)) like ?)
                   and (? is null or p.post_kind = ?)
                   and (? is null or p.status = ?)
+                  and (
+                      ? is null
+                      or (? = true and p.post_kind in ('NOTICE', 'NEWS'))
+                      or (? = false and p.post_kind not in ('NOTICE', 'NEWS'))
+                  )
                 group by p.id, p.title, p.body, p.thumbnail_url, p.post_kind, p.status, p.created_at, p.updated_at,
-                         u.name, a.name, i.name, c.id, c.name, c.category
+                         u.name, u.status, a.name, i.name, c.id, c.name, c.category
                 order by p.id desc
                 limit ?
                 """, JdbcResponseMapper.INSTANCE,
@@ -372,6 +380,7 @@ public class AdminFeatureController {
                 normalizedKeyword, normalizedKeyword, normalizedKeyword, normalizedKeyword,
                 normalizedPostKind, normalizedPostKind,
                 normalizedStatus, normalizedStatus,
+                editable, editable, editable,
                 CursorPageFactory.queryLimit(size));
         return CursorPageFactory.from(rows, size);
     }
@@ -422,7 +431,7 @@ public class AdminFeatureController {
             @PathVariable Long id,
             @Valid @RequestBody StatusUpdateRequest request
     ) {
-        String status = normalizeRequiredStatus(request.status(), "PUBLISHED", "HIDDEN", "DELETED");
+        String status = normalizeRequiredStatus(request.status(), "PUBLISHED", "HIDDEN");
         int updated = jdbcTemplate.update("""
                 update posts
                 set status = ?, updated_at = CURRENT_TIMESTAMP
