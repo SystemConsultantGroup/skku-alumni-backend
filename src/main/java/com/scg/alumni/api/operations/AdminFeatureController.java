@@ -38,6 +38,7 @@ public class AdminFeatureController {
         response.put("stats", Map.of(
                 "activeMembers", count("select count(*) from users where status = 'ACTIVE'"),
                 "pendingMembers", count("select count(*) from users where status = 'PENDING'"),
+                "withdrawnMembers", count("select count(*) from users where status = 'WITHDRAWN'"),
                 "paidCurrentOfficers", count("""
                         select count(*)
                         from officer_histories oh
