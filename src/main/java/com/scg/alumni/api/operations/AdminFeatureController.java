@@ -311,6 +311,43 @@ public class AdminFeatureController {
         return CursorPageFactory.from(rows, size);
     }
 
+    @GetMapping("/report-posts")
+    public CursorPageResponse<Map<String, Object>> findReportedPosts(
+            @RequestParam(required = false) Long cursor,
+            @RequestParam(required = false) Integer size
+    ) {
+        List<Map<String, Object>> rows = jdbcTemplate.query("""
+                select ranked.cursor_id as id, ranked.*
+                from (
+                    select summary.*,
+                           row_number() over (
+                               order by summary.report_count desc, summary.latest_report_id desc
+                           ) as cursor_id
+                    from (
+                        select p.id as target_post_id, p.title as target_title, p.status as post_status,
+                               p.post_kind, max(r.id) as latest_report_id,
+                               count(r.id) as report_count,
+                               sum(case when r.status = 'PENDING' then 1 else 0 end) as pending_count,
+                               max(r.created_at) as last_reported_at,
+                               case when author.status = 'WITHDRAWN' then '탈퇴한 사용자'
+                                    else coalesce(author.name, admin_author.name) end as author_name
+                        from reports r
+                        join posts p on p.id = r.target_post_id
+                        left join users author on author.id = p.user_id
+                        left join admins admin_author on admin_author.id = p.admin_id
+                        where lower(r.target_type) = 'post'
+                        group by p.id, p.title, p.status, p.post_kind,
+                                 author.status, author.name, admin_author.name
+                    ) summary
+                ) ranked
+                where (? is null or ranked.cursor_id > ?)
+                order by ranked.cursor_id
+                limit ?
+                """, JdbcResponseMapper.INSTANCE,
+                cursor, cursor, CursorPageFactory.queryLimit(size));
+        return CursorPageFactory.from(rows, size);
+    }
+
     @PatchMapping("/reports/{id}/status")
     @Transactional
     public Map<String, Object> updateReportStatus(
@@ -442,6 +479,27 @@ public class AdminFeatureController {
         }
         audit("UPDATE_POST_STATUS", "post", id);
         return Map.of("id", id, "status", status);
+    }
+
+    @GetMapping("/posts/{id}/reports")
+    public List<Map<String, Object>> findPostReports(@PathVariable Long id) {
+        Integer postCount = jdbcTemplate.queryForObject(
+                "select count(*) from posts where id = ?", Integer.class, id);
+        if (postCount == null || postCount == 0) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "게시글을 찾을 수 없습니다.");
+        }
+
+        return jdbcTemplate.query("""
+                select r.id, r.reason, r.reason_others, r.status, r.admin_memo,
+                       r.created_at, r.resolved_at,
+                       case when u.status = 'WITHDRAWN' then '탈퇴한 사용자'
+                            else coalesce(u.name, '알 수 없는 사용자') end as reporter_name
+                from reports r
+                left join users u on u.id = r.reporter_id
+                where r.target_post_id = ?
+                  and lower(r.target_type) = 'post'
+                order by r.id desc
+                """, JdbcResponseMapper.INSTANCE, id);
     }
 
     @GetMapping("/audit-logs")
