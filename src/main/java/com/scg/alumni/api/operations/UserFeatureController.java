@@ -44,7 +44,7 @@ public class UserFeatureController {
     public Map<String, Object> findMe() {
         Long currentUserId = AuthContext.currentMemberId();
         Map<String, Object> profile = jdbcTemplate.queryForObject("""
-                select u.id, u.name, u.student_id, u.email, u.phone, u.home_zipcode, u.home_address1, u.home_address2,
+                select u.id, u.name, u.student_id, u.profile_image_url, u.email, u.phone, u.home_zipcode, u.home_address1, u.home_address2,
                        u.birth_date, u.birth_date_public, u.phone_public, u.email_public,
                        u.home_address_public, u.notification_enabled,
                        u.admission_year, u.graduation_year, u.job_title, u.pr_text, u.company_id,
