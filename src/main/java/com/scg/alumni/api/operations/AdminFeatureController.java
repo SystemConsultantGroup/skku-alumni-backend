@@ -38,6 +38,7 @@ public class AdminFeatureController {
         response.put("stats", Map.of(
                 "activeMembers", count("select count(*) from users where status = 'ACTIVE'"),
                 "pendingMembers", count("select count(*) from users where status = 'PENDING'"),
+                "withdrawnMembers", count("select count(*) from users where status = 'WITHDRAWN'"),
                 "paidCurrentOfficers", count("""
                         select count(*)
                         from officer_histories oh
@@ -135,21 +136,37 @@ public class AdminFeatureController {
 
     @GetMapping("/applications")
     public CursorPageResponse<Map<String, Object>> findApplications(
+            @RequestParam(required = false) String keyword,
             @RequestParam(required = false) String status,
             @RequestParam(required = false) Long cursor,
             @RequestParam(required = false) Integer size
     ) {
+        String normalizedKeyword = normalizeLike(keyword);
         String normalizedStatus = normalizeUpper(status);
         List<Map<String, Object>> rows = jdbcTemplate.query("""
                 select id, name, student_id, phone, email, major_name, admission_year, desired_role,
                        company_name, job_title, status, reviewed_at, created_at
                 from member_applications
                 where (? is null or id < ?)
+                  and (
+                      ? is null
+                      or lower(coalesce(name, '')) like ?
+                      or lower(coalesce(student_id, '')) like ?
+                      or lower(coalesce(phone, '')) like ?
+                      or lower(coalesce(email, '')) like ?
+                      or lower(coalesce(major_name, '')) like ?
+                      or lower(coalesce(desired_role, '')) like ?
+                      or lower(coalesce(company_name, '')) like ?
+                      or lower(coalesce(job_title, '')) like ?
+                  )
                   and (? is null or status = ?)
                 order by id desc
                 limit ?
                 """, JdbcResponseMapper.INSTANCE,
-                cursor, cursor, normalizedStatus, normalizedStatus, CursorPageFactory.queryLimit(size));
+                cursor, cursor,
+                normalizedKeyword, normalizedKeyword, normalizedKeyword, normalizedKeyword, normalizedKeyword,
+                normalizedKeyword, normalizedKeyword, normalizedKeyword, normalizedKeyword,
+                normalizedStatus, normalizedStatus, CursorPageFactory.queryLimit(size));
         return CursorPageFactory.from(rows, size);
     }
 
@@ -177,10 +194,12 @@ public class AdminFeatureController {
 
     @GetMapping("/payments")
     public CursorPageResponse<Map<String, Object>> findPayments(
+            @RequestParam(required = false) String keyword,
             @RequestParam(required = false) String status,
             @RequestParam(required = false) Long cursor,
             @RequestParam(required = false) Integer size
     ) {
+        String normalizedKeyword = normalizeLike(keyword);
         String normalizedStatus = normalizeUpper(status);
         List<Map<String, Object>> rows = jdbcTemplate.query("""
                 select pr.id, u.name, u.student_id, pr.amount, pr.status, pr.paid_at,
@@ -191,11 +210,19 @@ public class AdminFeatureController {
                 join officer_histories oh on oh.user_id = pr.user_id and oh.officer_term_id = pr.officer_term_id
                 join officer_roles orole on orole.id = oh.officer_role_id
                 where (? is null or pr.id < ?)
+                  and (
+                      ? is null
+                      or lower(coalesce(u.name, '')) like ?
+                      or lower(coalesce(u.student_id, '')) like ?
+                      or lower(coalesce(orole.name, '')) like ?
+                  )
                   and (? is null or pr.status = ?)
                 order by pr.id desc
                 limit ?
                 """, JdbcResponseMapper.INSTANCE,
-                cursor, cursor, normalizedStatus, normalizedStatus, CursorPageFactory.queryLimit(size));
+                cursor, cursor,
+                normalizedKeyword, normalizedKeyword, normalizedKeyword, normalizedKeyword,
+                normalizedStatus, normalizedStatus, CursorPageFactory.queryLimit(size));
         return CursorPageFactory.from(rows, size);
     }
 
@@ -232,21 +259,34 @@ public class AdminFeatureController {
 
     @GetMapping("/asis-sync")
     public CursorPageResponse<Map<String, Object>> findAsisSyncTargets(
+            @RequestParam(required = false) String keyword,
             @RequestParam(required = false) Boolean synced,
             @RequestParam(required = false) Long cursor,
             @RequestParam(required = false) Integer size
     ) {
+        String normalizedKeyword = normalizeLike(keyword);
         List<Map<String, Object>> rows = jdbcTemplate.query("""
                 select pcl.id, pcl.field_name, pcl.old_value, pcl.new_value, pcl.synced,
                        pcl.changed_at, pcl.synced_at, u.id as user_id, u.name, u.student_id
                 from profile_change_logs pcl
                 join users u on u.id = pcl.user_id
                 where (? is null or pcl.id < ?)
+                  and (
+                      ? is null
+                      or lower(coalesce(u.name, '')) like ?
+                      or lower(coalesce(u.student_id, '')) like ?
+                      or lower(coalesce(pcl.field_name, '')) like ?
+                      or lower(coalesce(pcl.old_value, '')) like ?
+                      or lower(coalesce(pcl.new_value, '')) like ?
+                  )
                   and (? is null or pcl.synced = ?)
                 order by pcl.id desc
                 limit ?
                 """, JdbcResponseMapper.INSTANCE,
-                cursor, cursor, synced, synced, CursorPageFactory.queryLimit(size));
+                cursor, cursor,
+                normalizedKeyword, normalizedKeyword, normalizedKeyword,
+                normalizedKeyword, normalizedKeyword, normalizedKeyword,
+                synced, synced, CursorPageFactory.queryLimit(size));
         return CursorPageFactory.from(rows, size);
     }
 
@@ -285,6 +325,43 @@ public class AdminFeatureController {
         return CursorPageFactory.from(rows, size);
     }
 
+    @GetMapping("/report-posts")
+    public CursorPageResponse<Map<String, Object>> findReportedPosts(
+            @RequestParam(required = false) Long cursor,
+            @RequestParam(required = false) Integer size
+    ) {
+        List<Map<String, Object>> rows = jdbcTemplate.query("""
+                select ranked.cursor_id as id, ranked.*
+                from (
+                    select summary.*,
+                           row_number() over (
+                               order by summary.report_count desc, summary.latest_report_id desc
+                           ) as cursor_id
+                    from (
+                        select p.id as target_post_id, p.title as target_title, p.status as post_status,
+                               p.post_kind, max(r.id) as latest_report_id,
+                               count(r.id) as report_count,
+                               sum(case when r.status = 'PENDING' then 1 else 0 end) as pending_count,
+                               max(r.created_at) as last_reported_at,
+                               case when author.status = 'WITHDRAWN' then '탈퇴한 사용자'
+                                    else coalesce(author.name, admin_author.name) end as author_name
+                        from reports r
+                        join posts p on p.id = r.target_post_id
+                        left join users author on author.id = p.user_id
+                        left join admins admin_author on admin_author.id = p.admin_id
+                        where lower(r.target_type) = 'post'
+                        group by p.id, p.title, p.status, p.post_kind,
+                                 author.status, author.name, admin_author.name
+                    ) summary
+                ) ranked
+                where (? is null or ranked.cursor_id > ?)
+                order by ranked.cursor_id
+                limit ?
+                """, JdbcResponseMapper.INSTANCE,
+                cursor, cursor, CursorPageFactory.queryLimit(size));
+        return CursorPageFactory.from(rows, size);
+    }
+
     @PatchMapping("/reports/{id}/status")
     @Transactional
     public Map<String, Object> updateReportStatus(
@@ -315,6 +392,7 @@ public class AdminFeatureController {
             @RequestParam(required = false) String keyword,
             @RequestParam(required = false) String postKind,
             @RequestParam(required = false) String status,
+            @RequestParam(required = false) Boolean editable,
             @RequestParam(required = false) Long cursor,
             @RequestParam(required = false) Integer size
     ) {
@@ -323,7 +401,9 @@ public class AdminFeatureController {
         String normalizedStatus = normalizeUpper(status);
         List<Map<String, Object>> rows = jdbcTemplate.query("""
                 select p.id, p.title, p.body, p.thumbnail_url, p.post_kind, p.status, p.created_at, p.updated_at,
-                       coalesce(u.name, a.name) as author_name, i.name as industry_name,
+                       case when u.status = 'WITHDRAWN' then '탈퇴한 사용자'
+                            else coalesce(u.name, a.name) end as author_name,
+                       i.name as industry_name,
                        c.id as club_id, c.name as club_name, c.category as club_category,
                        count(r.id) as report_count
                 from posts p
@@ -337,8 +417,13 @@ public class AdminFeatureController {
                        or lower(coalesce(u.name, a.name)) like ?)
                   and (? is null or p.post_kind = ?)
                   and (? is null or p.status = ?)
+                  and (
+                      ? is null
+                      or (? = true and p.post_kind in ('NOTICE', 'NEWS'))
+                      or (? = false and p.post_kind not in ('NOTICE', 'NEWS'))
+                  )
                 group by p.id, p.title, p.body, p.thumbnail_url, p.post_kind, p.status, p.created_at, p.updated_at,
-                         u.name, a.name, i.name, c.id, c.name, c.category
+                         u.name, u.status, a.name, i.name, c.id, c.name, c.category
                 order by p.id desc
                 limit ?
                 """, JdbcResponseMapper.INSTANCE,
@@ -346,6 +431,7 @@ public class AdminFeatureController {
                 normalizedKeyword, normalizedKeyword, normalizedKeyword, normalizedKeyword,
                 normalizedPostKind, normalizedPostKind,
                 normalizedStatus, normalizedStatus,
+                editable, editable, editable,
                 CursorPageFactory.queryLimit(size));
         return CursorPageFactory.from(rows, size);
     }
@@ -396,7 +482,7 @@ public class AdminFeatureController {
             @PathVariable Long id,
             @Valid @RequestBody StatusUpdateRequest request
     ) {
-        String status = normalizeRequiredStatus(request.status(), "PUBLISHED", "HIDDEN", "DELETED");
+        String status = normalizeRequiredStatus(request.status(), "PUBLISHED", "HIDDEN");
         int updated = jdbcTemplate.update("""
                 update posts
                 set status = ?, updated_at = CURRENT_TIMESTAMP
@@ -407,6 +493,27 @@ public class AdminFeatureController {
         }
         audit("UPDATE_POST_STATUS", "post", id);
         return Map.of("id", id, "status", status);
+    }
+
+    @GetMapping("/posts/{id}/reports")
+    public List<Map<String, Object>> findPostReports(@PathVariable Long id) {
+        Integer postCount = jdbcTemplate.queryForObject(
+                "select count(*) from posts where id = ?", Integer.class, id);
+        if (postCount == null || postCount == 0) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "게시글을 찾을 수 없습니다.");
+        }
+
+        return jdbcTemplate.query("""
+                select r.id, r.reason, r.reason_others, r.status, r.admin_memo,
+                       r.created_at, r.resolved_at,
+                       case when u.status = 'WITHDRAWN' then '탈퇴한 사용자'
+                            else coalesce(u.name, '알 수 없는 사용자') end as reporter_name
+                from reports r
+                left join users u on u.id = r.reporter_id
+                where r.target_post_id = ?
+                  and lower(r.target_type) = 'post'
+                order by r.id desc
+                """, JdbcResponseMapper.INSTANCE, id);
     }
 
     @GetMapping("/audit-logs")

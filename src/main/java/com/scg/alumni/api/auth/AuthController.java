@@ -142,7 +142,19 @@ public class AuthController {
 
         AuthenticatedPrincipal principal = refreshTokenService.consume(scope, refreshToken)
                 .orElseThrow(this::unauthorized);
+        if (scope == AuthScope.MEMBER && !isActiveMember(principal.id())) {
+            revokeAndClear(AuthScope.MEMBER, request, response);
+            throw unauthorized();
+        }
         return issueAuthResponse(principal, request, response);
+    }
+
+    private boolean isActiveMember(Long memberId) {
+        Integer count = jdbcTemplate.queryForObject(
+                "select count(*) from users where id = ? and status = 'ACTIVE'",
+                Integer.class,
+                memberId);
+        return count != null && count > 0;
     }
 
     private AuthResponse issueAuthResponse(
