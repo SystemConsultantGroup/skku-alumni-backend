@@ -352,6 +352,38 @@ public class UserFeatureController {
                 """, JdbcResponseMapper.INSTANCE, currentUserId, currentUserId, currentUserId);
     }
 
+    @PostMapping("/clubs")
+    @Transactional
+    public Map<String, Object> createClub(@Valid @RequestBody ClubCreateRequest request) {
+        Long currentUserId = AuthContext.currentMemberId();
+        String category = request.category().trim().toUpperCase(Locale.ROOT);
+        if (!category.equals("HOBBY") && !category.equals("RESEARCH")) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "지원하지 않는 동호회 유형입니다.");
+        }
+
+        Map<String, Object> clubValues = new LinkedHashMap<>();
+        clubValues.put("name", request.name().trim());
+        clubValues.put("description", blankToEmpty(request.description()));
+        clubValues.put("category", category);
+        clubValues.put("president_user_id", currentUserId);
+
+        Number clubId = new SimpleJdbcInsert(jdbcTemplate)
+                .withTableName("clubs")
+                .usingColumns("name", "description", "category", "president_user_id")
+                .usingGeneratedKeyColumns("id")
+                .executeAndReturnKey(clubValues);
+
+        jdbcTemplate.update("""
+                insert into club_members (club_id, user_id, club_role, joined_at)
+                values (?, ?, 'PRESIDENT', CURRENT_TIMESTAMP)
+                """, clubId.longValue(), currentUserId);
+
+        return Map.of(
+                "id", clubId.longValue(),
+                "category", category,
+                "presidentUserId", currentUserId);
+    }
+
     @GetMapping("/clubs/{clubId}")
     public Map<String, Object> findClub(@PathVariable Long clubId) {
         Long currentUserId = AuthContext.currentMemberIdOrNull();
@@ -987,6 +1019,12 @@ public class UserFeatureController {
     public record ClubPostCreateRequest(
             @NotBlank @Size(max = 255) String title,
             @NotBlank String body) {
+    }
+
+    public record ClubCreateRequest(
+            @NotBlank @Size(max = 255) String name,
+            @Size(max = 2000) String description,
+            @NotBlank String category) {
     }
 
     public record ClubApplicationReviewRequest(
