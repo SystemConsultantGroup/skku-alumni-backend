@@ -42,7 +42,6 @@ public class Member extends BaseTimeEntity {
     @Column(unique = true)
     private String kingoId;
 
-    @Column(nullable = false)
     private String name;
 
     @Column(nullable = true)
@@ -53,7 +52,6 @@ public class Member extends BaseTimeEntity {
     @Enumerated(STRING)
     private Gender gender;
 
-    @Column(nullable = false)
     @Enumerated(STRING)
     private MemberCategory category;
 
@@ -61,10 +59,9 @@ public class Member extends BaseTimeEntity {
     private DegreeType degree;
 
     @ManyToOne(fetch = LAZY)
-    @JoinColumn(name = "major_id", nullable = false)
+    @JoinColumn(name = "major_id")
     private Major major;
 
-    @Column(nullable = false)
     private Integer admissionYear;
 
     private Integer graduationYear;

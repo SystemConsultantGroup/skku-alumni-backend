@@ -13,6 +13,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.dao.DuplicateKeyException;
@@ -122,6 +123,57 @@ public class UserFeatureController {
                 """, request.notificationEnabled(), request.phonePublic(), request.emailPublic(),
                 request.homeAddressPublic(), AuthContext.currentMemberId());
         return findMe();
+    }
+
+    @DeleteMapping("/me")
+    @Transactional
+    public Map<String, Object> withdrawMe() {
+        Long currentUserId = AuthContext.currentMemberId();
+        List<Map<String, Object>> leaderships = jdbcTemplate.query("""
+                select name,
+                       case when president_user_id = ? then '회장' else '총무' end as role_name
+                from clubs
+                where president_user_id = ? or manager_user_id = ?
+                order by id
+                """, JdbcResponseMapper.INSTANCE, currentUserId, currentUserId, currentUserId);
+        if (!leaderships.isEmpty()) {
+            String clubs = leaderships.stream()
+                    .map(leadership -> leadership.get("name") + " " + leadership.get("roleName"))
+                    .collect(Collectors.joining(", "));
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    clubs + "으로 활동 중입니다. 회원 탈퇴 전에 다른 회원을 후임으로 임명해주세요.");
+        }
+
+        jdbcTemplate.update("""
+                update club_members
+                set left_at = CURRENT_TIMESTAMP
+                where user_id = ? and left_at is null
+                """, currentUserId);
+        jdbcTemplate.update("delete from user_hobbies where user_id = ?", currentUserId);
+        jdbcTemplate.update("delete from user_web_links where user_id = ?", currentUserId);
+        jdbcTemplate.update("delete from profile_change_logs where user_id = ?", currentUserId);
+        jdbcTemplate.update(
+                "delete from user_blocks where blocker_id = ? or blocked_id = ?",
+                currentUserId,
+                currentUserId);
+        jdbcTemplate.update("""
+                update users
+                set student_id = null, kingo_id = null, name = null, password = null,
+                    birth_date = null, gender = null, category = null, degree = null,
+                    major_id = null, admission_year = null, graduation_year = null,
+                    nationality = null,
+                    home_zipcode = null, home_address1 = null, home_address2 = null,
+                    phone = null, email = null, email_receive = false,
+                    industry_id = null, company_id = null, job_title = null, pr_text = null,
+                    work_zipcode = null, work_address1 = null, work_address2 = null,
+                    birth_date_public = false, phone_public = false, email_public = false,
+                    home_address_public = false, notification_enabled = false,
+                    status = 'WITHDRAWN', updated_at = CURRENT_TIMESTAMP
+                where id = ? and status <> 'WITHDRAWN'
+                """, currentUserId);
+
+        return Map.of("status", "WITHDRAWN");
     }
 
     @GetMapping("/members/{memberId}")
@@ -614,7 +666,8 @@ public class UserFeatureController {
     public List<Map<String, Object>> findClubPosts(@PathVariable Long clubId) {
         Long currentUserId = AuthContext.currentMemberIdOrNull();
         return jdbcTemplate.query("""
-                select p.id, p.title, p.body, p.thumbnail_url, p.created_at, u.name as author_name
+                select p.id, p.title, p.body, p.thumbnail_url, p.created_at,
+                       case when u.status = 'WITHDRAWN' then '탈퇴한 사용자' else u.name end as author_name
                 from posts p
                 join users u on u.id = p.user_id
                 where p.club_id = ? and p.post_kind = 'CLUB' and p.status = 'PUBLISHED'
@@ -629,7 +682,8 @@ public class UserFeatureController {
             @PathVariable Long postId) {
         Long currentUserId = AuthContext.currentMemberIdOrNull();
         List<Map<String, Object>> rows = jdbcTemplate.query("""
-                select p.id, p.title, p.body, p.thumbnail_url, p.created_at, u.name as author_name
+                select p.id, p.title, p.body, p.thumbnail_url, p.created_at,
+                       case when u.status = 'WITHDRAWN' then '탈퇴한 사용자' else u.name end as author_name
                 from posts p
                 join users u on u.id = p.user_id
                 where p.id = ? and p.club_id = ? and p.post_kind = 'CLUB' and p.status = 'PUBLISHED'
@@ -693,7 +747,8 @@ public class UserFeatureController {
         Long currentUserId = AuthContext.currentMemberIdOrNull();
         List<Map<String, Object>> rows = jdbcTemplate.query("""
                 select p.id, p.title, p.body, p.thumbnail_url, p.created_at, p.post_kind,
-                       coalesce(u.name, a.name) as author_name
+                       case when u.status = 'WITHDRAWN' then '탈퇴한 사용자'
+                            else coalesce(u.name, a.name) end as author_name
                 from posts p
                 left join users u on u.id = p.user_id
                 left join admins a on a.id = p.admin_id
@@ -722,7 +777,8 @@ public class UserFeatureController {
         Long currentUserId = AuthContext.currentMemberIdOrNull();
         return jdbcTemplate.query("""
                 select p.id, p.title, p.body, p.thumbnail_url, p.created_at, p.post_kind,
-                       coalesce(u.name, a.name) as author_name,
+                       case when u.status = 'WITHDRAWN' then '탈퇴한 사용자'
+                            else coalesce(u.name, a.name) end as author_name,
                        p.industry_id, i.name as industry_name,
                        p.club_id, c.name as club_name, c.category as club_category
                 from posts p
@@ -819,7 +875,8 @@ public class UserFeatureController {
         Long currentUserId = AuthContext.currentMemberIdOrNull();
         List<Map<String, Object>> rows = jdbcTemplate.query("""
                 select p.id, p.title, p.body, p.thumbnail_url, p.created_at,
-                       coalesce(u.name, a.name) as author_name,
+                       case when u.status = 'WITHDRAWN' then '탈퇴한 사용자'
+                            else coalesce(u.name, a.name) end as author_name,
                        p.industry_id, i.name as industry_name
                 from posts p
                 left join users u on u.id = p.user_id
@@ -842,7 +899,8 @@ public class UserFeatureController {
         Long currentUserId = AuthContext.currentMemberIdOrNull();
         List<Map<String, Object>> rows = jdbcTemplate.query("""
                 select p.id, p.title, p.body, p.thumbnail_url, p.created_at,
-                       coalesce(u.name, a.name) as author_name,
+                       case when u.status = 'WITHDRAWN' then '탈퇴한 사용자'
+                            else coalesce(u.name, a.name) end as author_name,
                        p.industry_id, i.name as industry_name
                 from posts p
                 left join users u on u.id = p.user_id
