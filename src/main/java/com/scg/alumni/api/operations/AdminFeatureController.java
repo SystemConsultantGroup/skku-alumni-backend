@@ -135,21 +135,37 @@ public class AdminFeatureController {
 
     @GetMapping("/applications")
     public CursorPageResponse<Map<String, Object>> findApplications(
+            @RequestParam(required = false) String keyword,
             @RequestParam(required = false) String status,
             @RequestParam(required = false) Long cursor,
             @RequestParam(required = false) Integer size
     ) {
+        String normalizedKeyword = normalizeLike(keyword);
         String normalizedStatus = normalizeUpper(status);
         List<Map<String, Object>> rows = jdbcTemplate.query("""
                 select id, name, student_id, phone, email, major_name, admission_year, desired_role,
                        company_name, job_title, status, reviewed_at, created_at
                 from member_applications
                 where (? is null or id < ?)
+                  and (
+                      ? is null
+                      or lower(coalesce(name, '')) like ?
+                      or lower(coalesce(student_id, '')) like ?
+                      or lower(coalesce(phone, '')) like ?
+                      or lower(coalesce(email, '')) like ?
+                      or lower(coalesce(major_name, '')) like ?
+                      or lower(coalesce(desired_role, '')) like ?
+                      or lower(coalesce(company_name, '')) like ?
+                      or lower(coalesce(job_title, '')) like ?
+                  )
                   and (? is null or status = ?)
                 order by id desc
                 limit ?
                 """, JdbcResponseMapper.INSTANCE,
-                cursor, cursor, normalizedStatus, normalizedStatus, CursorPageFactory.queryLimit(size));
+                cursor, cursor,
+                normalizedKeyword, normalizedKeyword, normalizedKeyword, normalizedKeyword, normalizedKeyword,
+                normalizedKeyword, normalizedKeyword, normalizedKeyword, normalizedKeyword,
+                normalizedStatus, normalizedStatus, CursorPageFactory.queryLimit(size));
         return CursorPageFactory.from(rows, size);
     }
 
@@ -177,10 +193,12 @@ public class AdminFeatureController {
 
     @GetMapping("/payments")
     public CursorPageResponse<Map<String, Object>> findPayments(
+            @RequestParam(required = false) String keyword,
             @RequestParam(required = false) String status,
             @RequestParam(required = false) Long cursor,
             @RequestParam(required = false) Integer size
     ) {
+        String normalizedKeyword = normalizeLike(keyword);
         String normalizedStatus = normalizeUpper(status);
         List<Map<String, Object>> rows = jdbcTemplate.query("""
                 select pr.id, u.name, u.student_id, pr.amount, pr.status, pr.paid_at,
@@ -191,11 +209,19 @@ public class AdminFeatureController {
                 join officer_histories oh on oh.user_id = pr.user_id and oh.officer_term_id = pr.officer_term_id
                 join officer_roles orole on orole.id = oh.officer_role_id
                 where (? is null or pr.id < ?)
+                  and (
+                      ? is null
+                      or lower(coalesce(u.name, '')) like ?
+                      or lower(coalesce(u.student_id, '')) like ?
+                      or lower(coalesce(orole.name, '')) like ?
+                  )
                   and (? is null or pr.status = ?)
                 order by pr.id desc
                 limit ?
                 """, JdbcResponseMapper.INSTANCE,
-                cursor, cursor, normalizedStatus, normalizedStatus, CursorPageFactory.queryLimit(size));
+                cursor, cursor,
+                normalizedKeyword, normalizedKeyword, normalizedKeyword, normalizedKeyword,
+                normalizedStatus, normalizedStatus, CursorPageFactory.queryLimit(size));
         return CursorPageFactory.from(rows, size);
     }
 
