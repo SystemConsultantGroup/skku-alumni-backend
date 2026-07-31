@@ -259,21 +259,34 @@ public class AdminFeatureController {
 
     @GetMapping("/asis-sync")
     public CursorPageResponse<Map<String, Object>> findAsisSyncTargets(
+            @RequestParam(required = false) String keyword,
             @RequestParam(required = false) Boolean synced,
             @RequestParam(required = false) Long cursor,
             @RequestParam(required = false) Integer size
     ) {
+        String normalizedKeyword = normalizeLike(keyword);
         List<Map<String, Object>> rows = jdbcTemplate.query("""
                 select pcl.id, pcl.field_name, pcl.old_value, pcl.new_value, pcl.synced,
                        pcl.changed_at, pcl.synced_at, u.id as user_id, u.name, u.student_id
                 from profile_change_logs pcl
                 join users u on u.id = pcl.user_id
                 where (? is null or pcl.id < ?)
+                  and (
+                      ? is null
+                      or lower(coalesce(u.name, '')) like ?
+                      or lower(coalesce(u.student_id, '')) like ?
+                      or lower(coalesce(pcl.field_name, '')) like ?
+                      or lower(coalesce(pcl.old_value, '')) like ?
+                      or lower(coalesce(pcl.new_value, '')) like ?
+                  )
                   and (? is null or pcl.synced = ?)
                 order by pcl.id desc
                 limit ?
                 """, JdbcResponseMapper.INSTANCE,
-                cursor, cursor, synced, synced, CursorPageFactory.queryLimit(size));
+                cursor, cursor,
+                normalizedKeyword, normalizedKeyword, normalizedKeyword,
+                normalizedKeyword, normalizedKeyword, normalizedKeyword,
+                synced, synced, CursorPageFactory.queryLimit(size));
         return CursorPageFactory.from(rows, size);
     }
 
