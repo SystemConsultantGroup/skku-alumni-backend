@@ -5,11 +5,13 @@ import com.scg.alumni.domain.member.Member;
 import com.scg.alumni.domain.member.MemberRepository;
 import com.scg.alumni.domain.member.MemberStatus;
 import com.scg.alumni.domain.officer.OfficerPaymentStatus;
+import com.scg.alumni.global.security.AuthContext;
 import java.util.List;
 import java.util.Locale;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -22,24 +24,46 @@ public class MemberDirectoryService {
     private static final int MAX_PAGE_SIZE = 50;
 
     private final MemberRepository memberRepository;
+    private final JdbcTemplate jdbcTemplate;
 
     public CursorPageResponse<MemberSummaryResponse> search(
             String keyword,
+            String searchType,
             Long majorId,
             Long industryId,
+            Integer admissionYear,
+            Long officerTermId,
+            Long officerRoleId,
+            String region,
             String companyName,
             Long hobbyId,
             Long cursor,
             Integer size
     ) {
         int pageSize = normalizeSize(size);
+        Long currentUserId = AuthContext.currentMemberIdOrNull();
+        List<Long> blockedMemberIds = currentUserId == null ? List.of(-1L) : jdbcTemplate.queryForList(
+                "select blocked_id from user_blocks where blocker_id = ?", Long.class, currentUserId);
+        if (blockedMemberIds.isEmpty()) {
+            blockedMemberIds = List.of(-1L);
+        }
+        String normalizedSearchType = normalizeSearchType(searchType);
+        AdmissionSearch admissionSearch = normalizeAdmissionSearch(keyword, normalizedSearchType);
         List<Member> fetchedMembers = memberRepository.searchCurrentPaidDirectory(
-                normalizeLike(keyword),
+                normalizeKeyword(keyword, normalizedSearchType),
+                normalizedSearchType,
+                admissionSearch.yearKeyword(),
+                admissionSearch.studentIdKeyword(),
                 majorId,
                 industryId,
+                admissionYear,
+                officerTermId,
+                officerRoleId,
+                normalizeLike(region),
                 normalizeLike(companyName),
                 hobbyId,
                 cursor,
+                blockedMemberIds,
                 MemberStatus.ACTIVE,
                 OfficerPaymentStatus.PAID,
                 PageRequest.of(0, pageSize + 1)
@@ -66,6 +90,50 @@ public class MemberDirectoryService {
         if (!StringUtils.hasText(value)) {
             return null;
         }
-        return "%" + value.trim().toLowerCase(Locale.ROOT) + "%";
+        return "%" + value.replaceAll("\\s+", "").toLowerCase(Locale.ROOT) + "%";
+    }
+
+    private String normalizeKeyword(String value, String searchType) {
+        if (!StringUtils.hasText(value)) {
+            return null;
+        }
+        String normalized = value.replaceAll("\\s+", "").toLowerCase(Locale.ROOT);
+        if ("term".equals(searchType)) {
+            normalized = normalized.replace("제", "");
+        }
+        if ("admission".equals(searchType)) {
+            normalized = normalized.replace("학번", "");
+        }
+        if ("role".equals(searchType)) {
+            return normalized;
+        }
+        return "%" + normalized + "%";
+    }
+
+    private AdmissionSearch normalizeAdmissionSearch(String value, String searchType) {
+        if (!"admission".equals(searchType) || !StringUtils.hasText(value)) {
+            return new AdmissionSearch("__no_match__", "__no_match__");
+        }
+        String normalized = value.replaceAll("\\s+", "").replace("학번", "");
+        if (normalized.matches("\\d{2}")) {
+            return new AdmissionSearch("%" + normalized, "__no_match__");
+        }
+        if (normalized.matches("\\d{4}")) {
+            return new AdmissionSearch(normalized, "__no_match__");
+        }
+        return new AdmissionSearch("__no_match__", normalized.toLowerCase(Locale.ROOT));
+    }
+
+    private record AdmissionSearch(String yearKeyword, String studentIdKeyword) {
+    }
+
+    private String normalizeSearchType(String value) {
+        if (!StringUtils.hasText(value)) {
+            return "all";
+        }
+        return switch (value.trim().toLowerCase(Locale.ROOT)) {
+            case "major", "industry", "admission", "term", "role", "region" -> value.trim().toLowerCase(Locale.ROOT);
+            default -> "all";
+        };
     }
 }

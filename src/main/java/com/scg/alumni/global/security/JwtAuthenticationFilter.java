@@ -42,9 +42,12 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             return java.util.Optional.empty();
         }
 
+        String accessCookieName = request.getRequestURI().startsWith("/api/v1/admin/")
+                || request.getRequestURI().startsWith("/api/v1/auth/admin/")
+                ? authProperties.getAdminAccessCookieName()
+                : authProperties.getMemberAccessCookieName();
         for (Cookie cookie : cookies) {
-            if (authProperties.getMemberAccessCookieName().equals(cookie.getName())
-                    || authProperties.getAdminAccessCookieName().equals(cookie.getName())) {
+            if (accessCookieName.equals(cookie.getName())) {
                 return java.util.Optional.ofNullable(cookie.getValue());
             }
         }

@@ -36,16 +36,15 @@ public class Member extends BaseTimeEntity {
     @GeneratedValue(strategy = IDENTITY)
     private Long id;
 
-    @Column(nullable = false, unique = true)
+    @Column(nullable = true, unique = true)
     private String studentId;
 
     @Column(unique = true)
     private String kingoId;
 
-    @Column(nullable = false)
     private String name;
 
-    @Column(nullable = false)
+    @Column(nullable = true)
     private String password;
 
     private LocalDate birthDate;
@@ -53,7 +52,6 @@ public class Member extends BaseTimeEntity {
     @Enumerated(STRING)
     private Gender gender;
 
-    @Column(nullable = false)
     @Enumerated(STRING)
     private MemberCategory category;
 
@@ -61,10 +59,9 @@ public class Member extends BaseTimeEntity {
     private DegreeType degree;
 
     @ManyToOne(fetch = LAZY)
-    @JoinColumn(name = "major_id", nullable = false)
+    @JoinColumn(name = "major_id")
     private Major major;
 
-    @Column(nullable = false)
     private Integer admissionYear;
 
     private Integer graduationYear;
@@ -76,6 +73,18 @@ public class Member extends BaseTimeEntity {
     private String homeAddress1;
 
     private String homeAddress2;
+
+    private String workZipcode;
+
+    private String workAddress1;
+
+    private String workAddress2;
+
+    @Column(nullable = false)
+    private boolean homeAddressPublic;
+
+    @Column(nullable = false)
+    private boolean notificationEnabled;
 
     private String phone;
 

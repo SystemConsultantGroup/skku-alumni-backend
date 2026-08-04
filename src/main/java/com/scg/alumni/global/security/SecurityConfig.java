@@ -8,6 +8,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
+import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
@@ -28,20 +29,42 @@ public class SecurityConfig {
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         return http
+                .cors(Customizer.withDefaults())
                 .csrf(AbstractHttpConfigurer::disable)
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .exceptionHandling(exception -> exception.authenticationEntryPoint(authenticationEntryPoint()))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
-                        .requestMatchers("/actuator/health/**", "/api/v1/auth/**").permitAll()
+                        .requestMatchers("/actuator/health/**").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/v1/auth/me")
+                        .hasAnyRole(AuthScope.MEMBER.name(), AuthScope.ADMIN.name())
+                        .requestMatchers(HttpMethod.GET, "/api/v1/auth/member/me")
+                        .hasRole(AuthScope.MEMBER.name())
+                        .requestMatchers(HttpMethod.GET, "/api/v1/auth/admin/me")
+                        .hasRole(AuthScope.ADMIN.name())
+                        .requestMatchers("/api/v1/auth/**").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/member-applications").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/v1/clubs/*/posting-permission")
+                        .hasRole(AuthScope.MEMBER.name())
+                        .requestMatchers(HttpMethod.GET, "/api/v1/clubs/*/applications")
+                        .hasRole(AuthScope.MEMBER.name())
+                        .requestMatchers("/api/v1/post-images", "/api/v1/post-images/**")
+                        .hasAnyRole(AuthScope.MEMBER.name(), AuthScope.ADMIN.name())
+                        .requestMatchers("/api/v1/profile-images", "/api/v1/profile-images/**")
+                        .hasRole(AuthScope.MEMBER.name())
                         .requestMatchers(HttpMethod.GET,
                                 "/api/v1/reference-data",
                                 "/api/v1/members",
-                                "/api/v1/community/posts",
+                                "/api/v1/posts/recent",
                                 "/api/v1/clubs",
+                                "/api/v1/clubs/**",
                                 "/api/v1/notices",
-                                "/api/v1/business-posts"
+                                "/api/v1/notices/*",
+                                "/api/v1/news",
+                                "/api/v1/news/*",
+                                "/api/v1/official-posts/*",
+                                "/api/v1/business-posts",
+                                "/api/v1/business-posts/*"
                         ).permitAll()
                         .requestMatchers("/api/v1/admin/**").hasRole(AuthScope.ADMIN.name())
                         .requestMatchers("/api/v1/**").hasRole(AuthScope.MEMBER.name())

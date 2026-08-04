@@ -24,9 +24,28 @@ public class ReferenceDataController {
                 order by name
                 """, JdbcResponseMapper.INSTANCE));
         response.put("industries", jdbcTemplate.query("""
-                select id, name
-                from industries
-                order by name
+                select i.id, i.name,
+                       (
+                           select count(*)
+                           from users u
+                           where u.industry_id = i.id
+                       ) as member_count,
+                       (
+                           select count(*)
+                           from posts p
+                           where p.industry_id = i.id
+                             and p.post_kind = 'BUSINESS'
+                             and p.status = 'PUBLISHED'
+                       ) as business_post_count
+                from industries i
+                order by i.name
+                """, JdbcResponseMapper.INSTANCE));
+        response.put("companies", jdbcTemplate.query("""
+                select c.id, c.name, c.work_zipcode, c.work_address1, c.work_address2,
+                       c.description, c.industry_id, i.name as industry_name
+                from companies c
+                left join industries i on i.id = c.industry_id
+                order by c.name
                 """, JdbcResponseMapper.INSTANCE));
         response.put("hobbies", jdbcTemplate.query("""
                 select h.id, h.name, count(uh.id) as member_count
@@ -35,6 +54,22 @@ public class ReferenceDataController {
                 group by h.id, h.name
                 order by member_count desc, h.name
                 """, JdbcResponseMapper.INSTANCE));
+        response.put("regions", jdbcTemplate.queryForList("""
+                select region from (
+                    select distinct substring_index(trim(work_address1), ' ', 1) as region
+                    from companies where work_address1 is not null and trim(work_address1) <> ''
+                    union
+                    select distinct substring_index(trim(work_address1), ' ', 1) as region
+                    from users where work_address1 is not null and trim(work_address1) <> ''
+                    union
+                    select distinct substring_index(trim(home_address1), ' ', 1) as region
+                    from users
+                    where home_address_public = true
+                      and home_address1 is not null and trim(home_address1) <> ''
+                ) regions
+                where region <> ''
+                order by region
+                """, String.class));
         response.put("officerTerms", jdbcTemplate.query("""
                 select id, generation, phase, started_at, ended_at, current_term
                 from officer_terms
