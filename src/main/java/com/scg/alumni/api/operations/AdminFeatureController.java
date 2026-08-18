@@ -5,6 +5,7 @@ import com.scg.alumni.api.common.MarkdownImageExtractor;
 import com.scg.alumni.global.security.AuthContext;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -196,6 +197,7 @@ public class AdminFeatureController {
     public CursorPageResponse<Map<String, Object>> findPayments(
             @RequestParam(required = false) String keyword,
             @RequestParam(required = false) String status,
+            @RequestParam(required = false) Long officerTermId,
             @RequestParam(required = false) Long cursor,
             @RequestParam(required = false) Integer size
     ) {
@@ -217,13 +219,80 @@ public class AdminFeatureController {
                       or lower(coalesce(orole.name, '')) like ?
                   )
                   and (? is null or pr.status = ?)
+                  and (? is null or pr.officer_term_id = ?)
                 order by pr.id desc
                 limit ?
                 """, JdbcResponseMapper.INSTANCE,
                 cursor, cursor,
                 normalizedKeyword, normalizedKeyword, normalizedKeyword, normalizedKeyword,
-                normalizedStatus, normalizedStatus, CursorPageFactory.queryLimit(size));
+                normalizedStatus, normalizedStatus, officerTermId, officerTermId,
+                CursorPageFactory.queryLimit(size));
         return CursorPageFactory.from(rows, size);
+    }
+
+    @GetMapping("/officer-terms")
+    public List<Map<String, Object>> findOfficerTerms() {
+        return jdbcTemplate.query("""
+                select id, generation, phase, started_at, ended_at, current_term
+                from officer_terms
+                order by generation desc, phase desc
+                """, JdbcResponseMapper.INSTANCE);
+    }
+
+    /**
+     * 특정 대·기의 회비 납부를 기록한다.
+     *
+     * <p>회원들은 임기를 "대·기"가 아니라 연도로 기억해서, 1기 기간 중에 2기분을
+     * 미리 보내는 일이 흔하다. 그래서 현행 임기로 자동 생성된 레코드를 뒤집는
+     * 것만으로는 부족하고, 사무처가 어느 대·기에 대한 납부인지 직접 지정할 수
+     * 있어야 한다. 회의에서 정리된 요건이다.
+     */
+    @PostMapping("/payments")
+    @Transactional
+    public Map<String, Object> registerPayment(@Valid @RequestBody PaymentRegisterRequest request) {
+        String status = normalizeRequiredStatus(request.status(), "PAID", "UNPAID");
+        Map<String, Object> term = jdbcTemplate.query("""
+                select id, generation, phase
+                from officer_terms
+                where id = ?
+                """, JdbcResponseMapper.INSTANCE, request.officerTermId())
+                .stream()
+                .findFirst()
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "해당 임기를 찾을 수 없습니다."));
+
+        Long officerRoleId = request.officerRoleId() != null
+                ? request.officerRoleId()
+                : findLatestOfficerRoleId(request.userId());
+        if (officerRoleId == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "직책 이력이 없는 회원입니다. 직책을 함께 지정해주세요.");
+        }
+        String roleName = jdbcTemplate.queryForObject("select name from officer_roles where id = ?", String.class, officerRoleId);
+
+        ensureCurrentOfficerHistory(request.userId(), request.officerTermId(), officerRoleId);
+        ensurePaymentRecord(request.userId(), request.officerTermId(), paymentAmount(roleName));
+
+        jdbcTemplate.update("""
+                update payment_records
+                set status = ?, paid_at = case when ? = 'PAID' then CURRENT_TIMESTAMP else null end, updated_at = CURRENT_TIMESTAMP
+                where user_id = ?
+                  and officer_term_id = ?
+                """, status, status, request.userId(), request.officerTermId());
+        jdbcTemplate.update("""
+                update officer_histories
+                set payment_status = ?, updated_at = CURRENT_TIMESTAMP
+                where user_id = ?
+                  and officer_term_id = ?
+                """, status, request.userId(), request.officerTermId());
+
+        Long paymentId = jdbcTemplate.queryForObject("""
+                select id from payment_records where user_id = ? and officer_term_id = ?
+                """, Long.class, request.userId(), request.officerTermId());
+        audit("REGISTER_PAYMENT", "payment_record", paymentId);
+        return Map.of(
+                "id", paymentId,
+                "status", status,
+                "generation", term.get("generation"),
+                "phase", term.get("phase"));
     }
 
     @PatchMapping("/payments/{id}/status")
@@ -774,6 +843,21 @@ public class AdminFeatureController {
         return count != null && count > 0;
     }
 
+    /** 다른 임기의 납부를 기록할 때 쓸 직책. 가장 최근 임기의 직책을 그대로 이어 쓴다. */
+    private Long findLatestOfficerRoleId(Long userId) {
+        return jdbcTemplate.query("""
+                select oh.officer_role_id
+                from officer_histories oh
+                join officer_terms ot on ot.id = oh.officer_term_id
+                where oh.user_id = ?
+                order by ot.generation desc, ot.phase desc
+                limit 1
+                """, (resultSet, rowNum) -> resultSet.getLong(1), userId)
+                .stream()
+                .findFirst()
+                .orElse(null);
+    }
+
     private int paymentAmount(String roleName) {
         if ("회장".equals(roleName)) {
             return 1_000_000;
@@ -822,6 +906,14 @@ public class AdminFeatureController {
 
     public record StatusUpdateRequest(
             @NotBlank String status
+    ) {
+    }
+
+    public record PaymentRegisterRequest(
+            @NotNull Long userId,
+            @NotNull Long officerTermId,
+            @NotBlank String status,
+            Long officerRoleId
     ) {
     }
 
