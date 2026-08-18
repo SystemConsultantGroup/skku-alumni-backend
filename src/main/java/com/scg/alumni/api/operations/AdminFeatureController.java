@@ -4,6 +4,7 @@ import com.scg.alumni.api.common.CursorPageResponse;
 import com.scg.alumni.api.common.MarkdownImageExtractor;
 import com.scg.alumni.global.security.AdminRoleGuard;
 import com.scg.alumni.global.security.AuthContext;
+import com.scg.alumni.infrastructure.push.PushNotificationService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
@@ -36,6 +37,7 @@ import org.springframework.web.server.ResponseStatusException;
 public class AdminFeatureController {
 
     private final JdbcTemplate jdbcTemplate;
+    private final PushNotificationService pushNotificationService;
     private final AdminRoleGuard adminRoleGuard;
     private final PasswordEncoder passwordEncoder;
 
@@ -632,6 +634,7 @@ public class AdminFeatureController {
                 .usingGeneratedKeyColumns("id")
                 .executeAndReturnKey(values);
         audit("CREATE_OFFICIAL_POST", "post", id.longValue());
+        pushNotificationService.notifyOfficialPost(id.longValue(), postKind, request.title().trim());
         return Map.of("id", id.longValue(), "status", "PUBLISHED");
     }
 

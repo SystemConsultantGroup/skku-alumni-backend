@@ -4,6 +4,7 @@ import com.scg.alumni.api.common.CursorPageResponse;
 import com.scg.alumni.api.common.MarkdownImageExtractor;
 import com.scg.alumni.domain.officer.OfficerTerm;
 import com.scg.alumni.global.security.AuthContext;
+import com.scg.alumni.infrastructure.push.PushNotificationService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -40,6 +41,7 @@ import org.springframework.web.server.ResponseStatusException;
 public class UserFeatureController {
 
     private final JdbcTemplate jdbcTemplate;
+    private final PushNotificationService pushNotificationService;
 
     @GetMapping("/me")
     public Map<String, Object> findMe() {
@@ -138,6 +140,35 @@ public class UserFeatureController {
         return findMe();
     }
 
+    /**
+     * 앱이 발급받은 FCM 토큰을 등록한다.
+     *
+     * <p>기기를 물려주면 같은 토큰이 다른 회원에게 붙을 수 있어 소유자를 갱신한다.
+     */
+    @PutMapping("/me/device-tokens")
+    @Transactional
+    public Map<String, Object> registerDeviceToken(@Valid @RequestBody DeviceTokenRequest request) {
+        Long currentUserId = AuthContext.currentMemberId();
+        jdbcTemplate.update("""
+                insert into device_tokens (user_id, token, platform, last_seen_at, created_at, updated_at)
+                values (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                on duplicate key update
+                    user_id = values(user_id),
+                    platform = values(platform),
+                    last_seen_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                """, currentUserId, request.token(), request.platform().trim().toUpperCase(Locale.ROOT));
+        return Map.of("registered", true);
+    }
+
+    @DeleteMapping("/me/device-tokens/{token}")
+    @Transactional
+    public Map<String, Object> removeDeviceToken(@PathVariable String token) {
+        jdbcTemplate.update("delete from device_tokens where token = ? and user_id = ?",
+                token, AuthContext.currentMemberId());
+        return Map.of("removed", true);
+    }
+
     @DeleteMapping("/me")
     @Transactional
     public Map<String, Object> withdrawMe() {
@@ -186,6 +217,7 @@ public class UserFeatureController {
                     status = 'WITHDRAWN', updated_at = CURRENT_TIMESTAMP
                 where id = ? and status <> 'WITHDRAWN'
                 """, currentUserId);
+        jdbcTemplate.update("delete from device_tokens where user_id = ?", currentUserId);
 
         return Map.of("status", "WITHDRAWN");
     }
@@ -732,6 +764,8 @@ public class UserFeatureController {
                 MarkdownImageExtractor.firstImageUrl(request.body()), clubId);
 
         Long id = jdbcTemplate.queryForObject("select max(id) from posts", Long.class);
+        String clubName = jdbcTemplate.queryForObject("select name from clubs where id = ?", String.class, clubId);
+        pushNotificationService.notifyClubPost(clubId, clubName, id, request.title().trim(), currentUserId);
         return Map.of("id", id);
     }
 
@@ -1051,6 +1085,11 @@ public class UserFeatureController {
             List<Long> hobbyIds,
             List<@Size(max = 1000) String> webLinks,
             @Size(max = 500) String prText) {
+    }
+
+    public record DeviceTokenRequest(
+            @NotBlank @Size(max = 512) String token,
+            @NotBlank String platform) {
     }
 
     public record PreferenceUpdateRequest(
