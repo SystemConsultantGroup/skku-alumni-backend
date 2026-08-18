@@ -48,6 +48,7 @@ public class UserFeatureController {
                 select u.id, u.name, u.student_id, u.profile_image_url, u.email, u.phone, u.home_zipcode, u.home_address1, u.home_address2,
                        u.birth_date, u.birth_date_public, u.phone_public, u.email_public,
                        u.home_address_public, u.notification_enabled,
+                       u.notice_notification_enabled, u.club_notification_enabled,
                        u.admission_year, u.graduation_year, u.job_title, u.pr_text, u.company_id,
                        u.work_zipcode, u.work_address1, u.work_address2,
                        m.name as major_name, co.name as company_name,
@@ -127,10 +128,12 @@ public class UserFeatureController {
     public Map<String, Object> updatePreferences(@Valid @RequestBody PreferenceUpdateRequest request) {
         jdbcTemplate.update("""
                 update users
-                set notification_enabled = ?, phone_public = ?, email_public = ?,
+                set notification_enabled = ?, notice_notification_enabled = ?, club_notification_enabled = ?,
+                    phone_public = ?, email_public = ?,
                     home_address_public = ?, updated_at = CURRENT_TIMESTAMP
                 where id = ?
-                """, request.notificationEnabled(), request.phonePublic(), request.emailPublic(),
+                """, request.notificationEnabled(), request.noticeNotificationEnabled(), request.clubNotificationEnabled(),
+                request.phonePublic(), request.emailPublic(),
                 request.homeAddressPublic(), AuthContext.currentMemberId());
         return findMe();
     }
@@ -179,6 +182,7 @@ public class UserFeatureController {
                     work_zipcode = null, work_address1 = null, work_address2 = null,
                     birth_date_public = false, phone_public = false, email_public = false,
                     home_address_public = false, notification_enabled = false,
+                    notice_notification_enabled = false, club_notification_enabled = false,
                     status = 'WITHDRAWN', updated_at = CURRENT_TIMESTAMP
                 where id = ? and status <> 'WITHDRAWN'
                 """, currentUserId);
@@ -1051,6 +1055,8 @@ public class UserFeatureController {
 
     public record PreferenceUpdateRequest(
             boolean notificationEnabled,
+            boolean noticeNotificationEnabled,
+            boolean clubNotificationEnabled,
             boolean phonePublic,
             boolean emailPublic,
             boolean homeAddressPublic) {
