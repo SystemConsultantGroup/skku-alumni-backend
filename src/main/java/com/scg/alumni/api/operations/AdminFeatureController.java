@@ -623,8 +623,12 @@ public class AdminFeatureController {
         values.put("status", "PUBLISHED");
         values.put("post_kind", postKind);
 
+        // 넣을 컬럼을 명시하지 않으면 SimpleJdbcInsert가 테이블의 모든 컬럼을 대상으로
+        // 삼아 값이 없는 자리에 NULL을 보낸다. created_at은 NOT NULL이고 기본값은
+        // 컬럼을 생략했을 때만 적용되므로, 그대로 두면 공지 작성이 항상 실패한다.
         Number id = new SimpleJdbcInsert(jdbcTemplate)
                 .withTableName("posts")
+                .usingColumns(values.keySet().toArray(String[]::new))
                 .usingGeneratedKeyColumns("id")
                 .executeAndReturnKey(values);
         audit("CREATE_OFFICIAL_POST", "post", id.longValue());
