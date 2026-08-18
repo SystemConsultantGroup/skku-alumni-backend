@@ -2,6 +2,7 @@ package com.scg.alumni.api.operations;
 
 import com.scg.alumni.api.common.CursorPageResponse;
 import com.scg.alumni.api.common.MarkdownImageExtractor;
+import com.scg.alumni.domain.officer.OfficerTerm;
 import com.scg.alumni.global.security.AuthContext;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
@@ -59,11 +60,20 @@ public class UserFeatureController {
                 join majors m on m.id = u.major_id
                 left join companies co on co.id = u.company_id
                 left join industries i on i.id = u.industry_id
-                left join officer_terms ot on ot.current_term = true
-                left join officer_histories oh on oh.user_id = u.id and oh.officer_term_id = ot.id
+                left join officer_histories oh on oh.id = (
+                    select recent.id
+                    from officer_histories recent
+                    join officer_terms recent_term on recent_term.id = recent.officer_term_id
+                    where recent.user_id = u.id
+                      and recent_term.started_at <= CURRENT_DATE
+                      and recent_term.ended_at >= DATE_SUB(CURRENT_DATE, INTERVAL ? DAY)
+                    order by recent_term.started_at desc
+                    limit 1
+                )
+                left join officer_terms ot on ot.id = oh.officer_term_id
                 left join officer_roles orole on orole.id = oh.officer_role_id
                 where u.id = ?
-                """, JdbcResponseMapper.INSTANCE, currentUserId);
+                """, JdbcResponseMapper.INSTANCE, OfficerTerm.GRACE_DAYS, currentUserId);
         profile.put("hobbies", jdbcTemplate.query("""
                 select h.id, h.name
                 from user_hobbies uh
@@ -192,8 +202,10 @@ public class UserFeatureController {
                        ot.phase as officer_phase, orole.name as officer_role_name
                 from users u
                 join majors m on m.id = u.major_id
-                join officer_terms ot on ot.current_term = true
-                join officer_histories oh on oh.user_id = u.id and oh.officer_term_id = ot.id
+                join officer_histories oh on oh.user_id = u.id
+                join officer_terms ot on ot.id = oh.officer_term_id
+                    and ot.started_at <= CURRENT_DATE
+                    and ot.ended_at >= DATE_SUB(CURRENT_DATE, INTERVAL ? DAY)
                 join officer_roles orole on orole.id = oh.officer_role_id
                 left join companies co on co.id = u.company_id
                 left join industries i on i.id = u.industry_id
@@ -201,7 +213,8 @@ public class UserFeatureController {
                   and not exists (
                       select 1 from user_blocks ub where ub.blocker_id = ? and ub.blocked_id = u.id
                   )
-                """, JdbcResponseMapper.INSTANCE, memberId, AuthContext.currentMemberId()).stream()
+                order by ot.started_at desc
+                """, JdbcResponseMapper.INSTANCE, OfficerTerm.GRACE_DAYS, memberId, AuthContext.currentMemberId()).stream()
                 .findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("임원 정보를 찾을 수 없습니다."));
         member.put("hobbies", jdbcTemplate.queryForList("""
