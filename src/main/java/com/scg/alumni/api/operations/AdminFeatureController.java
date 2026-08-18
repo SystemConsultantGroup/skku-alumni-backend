@@ -2,10 +2,13 @@ package com.scg.alumni.api.operations;
 
 import com.scg.alumni.api.common.CursorPageResponse;
 import com.scg.alumni.api.common.MarkdownImageExtractor;
+import com.scg.alumni.global.security.AdminRoleGuard;
 import com.scg.alumni.global.security.AuthContext;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -13,6 +16,7 @@ import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.jdbc.core.simple.SimpleJdbcInsert;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -32,6 +36,8 @@ import org.springframework.web.server.ResponseStatusException;
 public class AdminFeatureController {
 
     private final JdbcTemplate jdbcTemplate;
+    private final AdminRoleGuard adminRoleGuard;
+    private final PasswordEncoder passwordEncoder;
 
     @GetMapping("/dashboard")
     public Map<String, Object> findDashboard() {
@@ -449,11 +455,111 @@ public class AdminFeatureController {
     @GetMapping("/managers")
     public List<Map<String, Object>> findManagers() {
         return jdbcTemplate.query("""
-                select a.id, a.email, a.name, a.position, a.active, ar.name as role_name, a.created_at
+                select a.id, a.email, a.name, a.position, a.active, ar.id as role_id, ar.name as role_name, a.created_at
                 from admins a
                 join admin_roles ar on ar.id = a.admin_role_id
                 order by a.id
                 """, JdbcResponseMapper.INSTANCE);
+    }
+
+    @GetMapping("/manager-roles")
+    public List<Map<String, Object>> findManagerRoles() {
+        return jdbcTemplate.query("""
+                select id, name, description
+                from admin_roles
+                order by id
+                """, JdbcResponseMapper.INSTANCE);
+    }
+
+    /**
+     * 운영자 계정을 발급한다.
+     *
+     * <p>직원마다 계정을 따로 줘야 누가 무엇을 처리했는지 감사 로그로 남는다.
+     * 계정 공유를 막자는 것이 회의에서 나온 취지다.
+     */
+    @PostMapping("/managers")
+    @Transactional
+    public Map<String, Object> createManager(@Valid @RequestBody ManagerCreateRequest request) {
+        adminRoleGuard.requireMaster();
+        String email = request.email().trim().toLowerCase(Locale.ROOT);
+        Integer duplicated = jdbcTemplate.queryForObject("select count(*) from admins where email = ?", Integer.class, email);
+        if (duplicated != null && duplicated > 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "이미 등록된 이메일입니다.");
+        }
+        requireExistingRole(request.adminRoleId());
+        jdbcTemplate.update("""
+                insert into admins (email, name, password, position, admin_role_id, active, created_at, updated_at)
+                values (?, ?, ?, ?, ?, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """, email, request.name().trim(), passwordEncoder.encode(request.password()),
+                text(request.position()), request.adminRoleId());
+        Long id = jdbcTemplate.queryForObject("select id from admins where email = ?", Long.class, email);
+        audit("CREATE_MANAGER", "admin", id);
+        return Map.of("id", id, "email", email);
+    }
+
+    @PatchMapping("/managers/{id}")
+    @Transactional
+    public Map<String, Object> updateManager(@PathVariable Long id, @Valid @RequestBody ManagerUpdateRequest request) {
+        adminRoleGuard.requireMaster();
+        requireExistingManager(id);
+        if (request.adminRoleId() != null) {
+            requireExistingRole(request.adminRoleId());
+            jdbcTemplate.update("update admins set admin_role_id = ?, updated_at = CURRENT_TIMESTAMP where id = ?",
+                    request.adminRoleId(), id);
+        }
+        if (StringUtils.hasText(request.name())) {
+            jdbcTemplate.update("update admins set name = ?, updated_at = CURRENT_TIMESTAMP where id = ?", request.name().trim(), id);
+        }
+        if (request.position() != null) {
+            jdbcTemplate.update("update admins set position = ?, updated_at = CURRENT_TIMESTAMP where id = ?", text(request.position()), id);
+        }
+        if (StringUtils.hasText(request.password())) {
+            jdbcTemplate.update("update admins set password = ?, updated_at = CURRENT_TIMESTAMP where id = ?",
+                    passwordEncoder.encode(request.password()), id);
+        }
+        audit("UPDATE_MANAGER", "admin", id);
+        return Map.of("id", id);
+    }
+
+    /** 권한 회수. 감사 로그의 주체로 남아 있어야 하므로 계정을 지우지 않고 비활성화한다. */
+    @PatchMapping("/managers/{id}/active")
+    @Transactional
+    public Map<String, Object> updateManagerActive(@PathVariable Long id, @Valid @RequestBody ManagerActiveRequest request) {
+        adminRoleGuard.requireMaster();
+        requireExistingManager(id);
+        if (!request.isActive() && id.equals(AuthContext.currentAdminId())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "자기 계정의 권한은 회수할 수 없습니다.");
+        }
+        if (!request.isActive() && isLastActiveMaster(id)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "마지막 사무총장 계정의 권한은 회수할 수 없습니다.");
+        }
+        jdbcTemplate.update("update admins set active = ?, updated_at = CURRENT_TIMESTAMP where id = ?", request.isActive(), id);
+        audit(request.isActive() ? "ACTIVATE_MANAGER" : "DEACTIVATE_MANAGER", "admin", id);
+        return Map.of("id", id, "active", request.isActive());
+    }
+
+    private void requireExistingManager(Long id) {
+        Integer count = jdbcTemplate.queryForObject("select count(*) from admins where id = ?", Integer.class, id);
+        if (count == null || count == 0) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "운영자를 찾을 수 없습니다.");
+        }
+    }
+
+    private void requireExistingRole(Long adminRoleId) {
+        Integer count = jdbcTemplate.queryForObject("select count(*) from admin_roles where id = ?", Integer.class, adminRoleId);
+        if (count == null || count == 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "존재하지 않는 권한입니다.");
+        }
+    }
+
+    private boolean isLastActiveMaster(Long id) {
+        Integer remaining = jdbcTemplate.queryForObject("""
+                select count(*)
+                from admins a
+                join admin_roles ar on ar.id = a.admin_role_id
+                where ar.name = 'MASTER' and a.active = true and a.id <> ?
+                """, Integer.class, id);
+        return remaining == null || remaining == 0;
     }
 
     @GetMapping("/posts")
@@ -907,6 +1013,31 @@ public class AdminFeatureController {
     public record StatusUpdateRequest(
             @NotBlank String status
     ) {
+    }
+
+    public record ManagerCreateRequest(
+            @NotBlank @Email String email,
+            @NotBlank String name,
+            @NotBlank @Size(min = 8, message = "비밀번호는 8자 이상이어야 합니다.") String password,
+            String position,
+            @NotNull Long adminRoleId
+    ) {
+    }
+
+    public record ManagerUpdateRequest(
+            String name,
+            String position,
+            @Size(min = 8, message = "비밀번호는 8자 이상이어야 합니다.") String password,
+            Long adminRoleId
+    ) {
+    }
+
+    public record ManagerActiveRequest(
+            @NotNull Boolean active
+    ) {
+        public boolean isActive() {
+            return Boolean.TRUE.equals(active);
+        }
     }
 
     public record PaymentRegisterRequest(
