@@ -38,7 +38,14 @@ import static org.springframework.http.HttpStatus.BAD_REQUEST;
 @RequestMapping("/api/v1/admin/members/excel")
 public class AdminMemberExcelController {
 
-    private static final List<String> HEADERS = List.of("학번", "이름", "학과", "입학연도", "전화번호", "이메일", "회사명", "직위", "상태");
+    /**
+     * 업로드 양식. 회원 상태는 사무처가 승인 화면에서 다루는 내부 값이라 양식에서 뺐다.
+     * 엑셀로 부은 회원은 모두 가입 대기(PENDING)로 들어오고, 승인은 회원 관리에서 한다.
+     */
+    private static final List<String> UPLOAD_HEADERS = List.of("학번", "이름", "학과", "입학연도", "전화번호", "이메일", "회사명", "직위");
+
+    /** 목록 다운로드. 사무처가 보는 자료라 상태를 포함한다. */
+    private static final List<String> DOWNLOAD_HEADERS = List.of("학번", "이름", "학과", "입학연도", "전화번호", "이메일", "회사명", "직위", "상태");
     private static final Set<String> STATUSES = Set.of("PENDING", "ACTIVE", "REJECTED");
     private static final int MAX_ROWS = 5_000;
 
@@ -50,11 +57,11 @@ public class AdminMemberExcelController {
         try (XSSFWorkbook workbook = new XSSFWorkbook(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             Sheet form = workbook.createSheet("회원 업로드 양식");
             Row header = form.createRow(0);
-            for (int index = 0; index < HEADERS.size(); index++) {
-                header.createCell(index).setCellValue(HEADERS.get(index));
+            for (int index = 0; index < UPLOAD_HEADERS.size(); index++) {
+                header.createCell(index).setCellValue(UPLOAD_HEADERS.get(index));
                 form.setColumnWidth(index, switch (index) {
                     case 0, 4 -> 18 * 256;
-                    case 1, 3, 8 -> 14 * 256;
+                    case 1, 3 -> 14 * 256;
                     default -> 24 * 256;
                 });
             }
@@ -71,8 +78,8 @@ public class AdminMemberExcelController {
                     {"이메일", "선택"},
                     {"회사명", "선택 · 없는 회사명은 새로 등록됩니다."},
                     {"직위", "선택"},
-                    {"상태", "선택 · PENDING, ACTIVE, REJECTED 중 하나 · 비워두면 PENDING"},
-                    {"제한", "첫 번째 시트 기준 최대 5,000명, 파일 크기 10MB 이하"}
+                    {"제한", "첫 번째 시트 기준 최대 5,000명, 파일 크기 10MB 이하"},
+                    {"참고", "업로드한 회원은 모두 가입 대기 상태로 들어옵니다. 승인은 회원 관리에서 합니다."}
             };
             for (int rowIndex = 0; rowIndex < guideRows.length; rowIndex++) {
                 Row row = guide.createRow(rowIndex);
@@ -115,7 +122,7 @@ public class AdminMemberExcelController {
         try (XSSFWorkbook workbook = new XSSFWorkbook(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             Sheet sheet = workbook.createSheet("회원 목록");
             Row header = sheet.createRow(0);
-            for (int index = 0; index < HEADERS.size(); index++) header.createCell(index).setCellValue(HEADERS.get(index));
+            for (int index = 0; index < DOWNLOAD_HEADERS.size(); index++) header.createCell(index).setCellValue(DOWNLOAD_HEADERS.get(index));
             int rowIndex = 1;
             for (Map<String, Object> member : members) {
                 Row row = sheet.createRow(rowIndex++);
@@ -129,7 +136,7 @@ public class AdminMemberExcelController {
                 write(row, 7, member.get("job_title"));
                 write(row, 8, member.get("status"));
             }
-            for (int index = 0; index < HEADERS.size(); index++) sheet.autoSizeColumn(index);
+            for (int index = 0; index < DOWNLOAD_HEADERS.size(); index++) sheet.autoSizeColumn(index);
             workbook.write(output);
             return excelResponse("members.xlsx", output.toByteArray());
         }
@@ -162,24 +169,22 @@ public class AdminMemberExcelController {
                 if (majorId == null) throw badRequest(excelRow + "행: 등록되지 않은 학과입니다. (" + majorName + ")");
                 String companyName = value(row, 6, formatter);
                 Long companyId = StringUtils.hasText(companyName) ? findOrCreateCompany(companyName.trim()) : null;
-                String status = value(row, 8, formatter).toUpperCase(Locale.ROOT);
-                if (!StringUtils.hasText(status)) status = "PENDING";
-                if (!STATUSES.contains(status)) throw badRequest(excelRow + "행: 상태는 PENDING, ACTIVE, REJECTED 중 하나여야 합니다.");
+                // 기존 회원을 다시 부어도 이미 승인된 상태를 되돌리지 않는다.
                 int count = jdbcTemplate.update("""
                         update users set name = ?, major_id = ?, admission_year = ?, phone = ?, email = ?,
-                            company_id = ?, job_title = ?, status = ?, updated_at = CURRENT_TIMESTAMP
+                            company_id = ?, job_title = ?, updated_at = CURRENT_TIMESTAMP
                         where student_id = ?
                         """, name, majorId, admissionYear, nullable(row, 4, formatter), nullable(row, 5, formatter),
-                        companyId, nullable(row, 7, formatter), status, studentId);
+                        companyId, nullable(row, 7, formatter), studentId);
                 if (count > 0) {
                     updated++;
                 } else {
                     jdbcTemplate.update("""
                             insert into users (student_id, name, password, category, degree, major_id, admission_year,
                                 phone, email, company_id, job_title, status, created_at, updated_at)
-                            values (?, ?, ?, 'UNDERGRADUATE', 'BACHELOR', ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                            values (?, ?, ?, 'UNDERGRADUATE', 'BACHELOR', ?, ?, ?, ?, ?, ?, 'PENDING', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                             """, studentId, name, temporaryPassword, majorId, admissionYear, nullable(row, 4, formatter),
-                            nullable(row, 5, formatter), companyId, nullable(row, 7, formatter), status);
+                            nullable(row, 5, formatter), companyId, nullable(row, 7, formatter));
                     created++;
                 }
             }
@@ -206,9 +211,9 @@ public class AdminMemberExcelController {
 
     private void validateHeaders(Row row, DataFormatter formatter) {
         if (row == null) throw badRequest("첫 행에 컬럼명이 필요합니다.");
-        for (int index = 0; index < HEADERS.size(); index++) {
-            if (!HEADERS.get(index).equals(value(row, index, formatter))) {
-                throw badRequest("첫 행의 컬럼 순서는 다음과 같아야 합니다: " + String.join(", ", HEADERS));
+        for (int index = 0; index < UPLOAD_HEADERS.size(); index++) {
+            if (!UPLOAD_HEADERS.get(index).equals(value(row, index, formatter))) {
+                throw badRequest("첫 행의 컬럼 순서는 다음과 같아야 합니다: " + String.join(", ", UPLOAD_HEADERS));
             }
         }
     }
@@ -247,7 +252,7 @@ public class AdminMemberExcelController {
     }
 
     private boolean isBlank(Row row, DataFormatter formatter) {
-        for (int index = 0; index < HEADERS.size(); index++) if (StringUtils.hasText(value(row, index, formatter))) return false;
+        for (int index = 0; index < UPLOAD_HEADERS.size(); index++) if (StringUtils.hasText(value(row, index, formatter))) return false;
         return true;
     }
 
