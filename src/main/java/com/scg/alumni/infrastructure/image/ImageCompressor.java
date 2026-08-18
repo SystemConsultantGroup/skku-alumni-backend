@@ -50,7 +50,10 @@ public class ImageCompressor {
     }
 
     public Result compress(MultipartFile file, String contentType) throws IOException {
-        byte[] original = file.getBytes();
+        return compress(file.getBytes(), contentType);
+    }
+
+    public Result compress(byte[] original, String contentType) throws IOException {
         String normalizedType = contentType.toLowerCase(Locale.ROOT);
         if (original.length <= COMPRESSION_THRESHOLD_BYTES) {
             return new Result(original, normalizedType, false);
