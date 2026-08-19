@@ -1,5 +1,6 @@
 package com.scg.alumni.api.operations;
 
+import com.scg.alumni.infrastructure.image.ImageCompressor;
 import com.scg.alumni.infrastructure.minio.MinioProperties;
 import io.minio.BucketExistsArgs;
 import io.minio.GetObjectArgs;
@@ -36,7 +37,11 @@ import static org.springframework.http.HttpStatus.NOT_FOUND;
 @RequestMapping("/api/v1/post-images")
 public class PostImageController {
 
-    private static final long MAX_FILE_SIZE = 10L * 1024 * 1024;
+    /**
+     * 수신 한도. 이 크기까지는 일단 받아서 {@link ImageCompressor}가 줄인다.
+     * 저장되는 크기와는 다르다.
+     */
+    private static final long MAX_UPLOAD_SIZE = 30L * 1024 * 1024;
     private static final Set<String> ALLOWED_CONTENT_TYPES = Set.of(
             MediaType.IMAGE_JPEG_VALUE,
             MediaType.IMAGE_PNG_VALUE,
@@ -45,20 +50,26 @@ public class PostImageController {
 
     private final MinioClient minioClient;
     private final MinioProperties minioProperties;
+    private final ImageCompressor imageCompressor;
 
     @PostMapping
     public Map<String, String> upload(@RequestPart("file") MultipartFile file) {
         validate(file);
-        String contentType = file.getContentType().toLowerCase(Locale.ROOT);
-        String objectName = "posts/" + UUID.randomUUID() + extension(contentType);
+        ImageCompressor.Result image;
+        try {
+            image = imageCompressor.compress(file, file.getContentType().toLowerCase(Locale.ROOT));
+        } catch (IOException exception) {
+            throw new IllegalStateException("이미지를 변환하지 못했습니다.", exception);
+        }
+        String objectName = "posts/" + UUID.randomUUID() + extension(image.contentType());
 
         try {
             ensureBucket();
             minioClient.putObject(PutObjectArgs.builder()
                     .bucket(minioProperties.bucket())
                     .object(objectName)
-                    .contentType(contentType)
-                    .stream(file.getInputStream(), file.getSize(), -1L)
+                    .contentType(image.contentType())
+                    .stream(new java.io.ByteArrayInputStream(image.bytes()), image.size(), -1L)
                     .build());
         } catch (Exception exception) {
             throw new IllegalStateException("이미지 저장에 실패했습니다.", exception);
@@ -104,8 +115,8 @@ public class PostImageController {
         if (file.isEmpty()) {
             throw new ResponseStatusException(BAD_REQUEST, "이미지 파일을 선택해주세요.");
         }
-        if (file.getSize() > MAX_FILE_SIZE) {
-            throw new ResponseStatusException(BAD_REQUEST, "이미지는 10MB 이하만 업로드할 수 있습니다.");
+        if (file.getSize() > MAX_UPLOAD_SIZE) {
+            throw new ResponseStatusException(BAD_REQUEST, "이미지는 30MB 이하만 업로드할 수 있습니다.");
         }
         String contentType = file.getContentType();
         if (contentType == null || !ALLOWED_CONTENT_TYPES.contains(contentType.toLowerCase(Locale.ROOT))) {

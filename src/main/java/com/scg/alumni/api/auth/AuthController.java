@@ -1,5 +1,6 @@
 package com.scg.alumni.api.auth;
 
+import com.scg.alumni.global.security.AdminRoleGuard;
 import com.scg.alumni.global.security.AuthContext;
 import com.scg.alumni.global.security.AuthProperties;
 import com.scg.alumni.global.security.AuthScope;
@@ -13,6 +14,7 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpHeaders;
@@ -38,6 +40,7 @@ public class AuthController {
     private final JwtTokenService jwtTokenService;
     private final RefreshTokenService refreshTokenService;
     private final AuthProperties authProperties;
+    private final AdminRoleGuard adminRoleGuard;
 
     @PostMapping("/member/login")
     @Transactional(readOnly = true)
@@ -125,13 +128,24 @@ public class AuthController {
         return principal;
     }
 
+    /**
+     * 관리 화면이 역할에 맞는 메뉴만 보여줄 수 있도록 권한을 함께 내려준다.
+     *
+     * <p>접근 차단 자체는 서버가 하지만, 근로장학생에게 쓸 수 없는 메뉴를
+     * 늘어놓고 누를 때마다 403을 띄우는 것은 화면이 아니다.
+     */
     @GetMapping("/admin/me")
-    public AuthenticatedPrincipal adminMe() {
+    public Map<String, Object> adminMe() {
         AuthenticatedPrincipal principal = AuthContext.current();
         if (principal.scope() != AuthScope.ADMIN) {
             throw unauthorized();
         }
-        return principal;
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("id", principal.id());
+        response.put("scope", principal.scope());
+        response.put("name", principal.name());
+        response.put("roleName", adminRoleGuard.currentRole());
+        return response;
     }
 
     private AuthResponse refresh(AuthScope scope, HttpServletRequest request, HttpServletResponse response) {

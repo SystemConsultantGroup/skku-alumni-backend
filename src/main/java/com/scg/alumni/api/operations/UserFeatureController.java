@@ -2,7 +2,9 @@ package com.scg.alumni.api.operations;
 
 import com.scg.alumni.api.common.CursorPageResponse;
 import com.scg.alumni.api.common.MarkdownImageExtractor;
+import com.scg.alumni.domain.officer.OfficerTerm;
 import com.scg.alumni.global.security.AuthContext;
+import com.scg.alumni.infrastructure.push.PushNotificationService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -39,6 +41,7 @@ import org.springframework.web.server.ResponseStatusException;
 public class UserFeatureController {
 
     private final JdbcTemplate jdbcTemplate;
+    private final PushNotificationService pushNotificationService;
 
     @GetMapping("/me")
     public Map<String, Object> findMe() {
@@ -47,6 +50,7 @@ public class UserFeatureController {
                 select u.id, u.name, u.student_id, u.profile_image_url, u.email, u.phone, u.home_zipcode, u.home_address1, u.home_address2,
                        u.birth_date, u.birth_date_public, u.phone_public, u.email_public,
                        u.home_address_public, u.notification_enabled,
+                       u.notice_notification_enabled, u.club_notification_enabled,
                        u.admission_year, u.graduation_year, u.job_title, u.pr_text, u.company_id,
                        u.work_zipcode, u.work_address1, u.work_address2,
                        m.name as major_name, co.name as company_name,
@@ -59,11 +63,20 @@ public class UserFeatureController {
                 join majors m on m.id = u.major_id
                 left join companies co on co.id = u.company_id
                 left join industries i on i.id = u.industry_id
-                left join officer_terms ot on ot.current_term = true
-                left join officer_histories oh on oh.user_id = u.id and oh.officer_term_id = ot.id
+                left join officer_histories oh on oh.id = (
+                    select recent.id
+                    from officer_histories recent
+                    join officer_terms recent_term on recent_term.id = recent.officer_term_id
+                    where recent.user_id = u.id
+                      and recent_term.started_at <= CURRENT_DATE
+                      and recent_term.ended_at >= DATE_SUB(CURRENT_DATE, INTERVAL ? DAY)
+                    order by recent_term.started_at desc
+                    limit 1
+                )
+                left join officer_terms ot on ot.id = oh.officer_term_id
                 left join officer_roles orole on orole.id = oh.officer_role_id
                 where u.id = ?
-                """, JdbcResponseMapper.INSTANCE, currentUserId);
+                """, JdbcResponseMapper.INSTANCE, OfficerTerm.GRACE_DAYS, currentUserId);
         profile.put("hobbies", jdbcTemplate.query("""
                 select h.id, h.name
                 from user_hobbies uh
@@ -117,12 +130,49 @@ public class UserFeatureController {
     public Map<String, Object> updatePreferences(@Valid @RequestBody PreferenceUpdateRequest request) {
         jdbcTemplate.update("""
                 update users
-                set notification_enabled = ?, phone_public = ?, email_public = ?,
+                set notification_enabled = ?, notice_notification_enabled = ?, club_notification_enabled = ?,
+                    phone_public = ?, email_public = ?,
                     home_address_public = ?, updated_at = CURRENT_TIMESTAMP
                 where id = ?
-                """, request.notificationEnabled(), request.phonePublic(), request.emailPublic(),
+                """, request.notificationEnabled(), request.noticeNotificationEnabled(), request.clubNotificationEnabled(),
+                request.phonePublic(), request.emailPublic(),
                 request.homeAddressPublic(), AuthContext.currentMemberId());
         return findMe();
+    }
+
+    /**
+     * 앱이 발급받은 FCM 토큰을 등록한다.
+     *
+     * <p>기기를 물려주면 같은 토큰이 다른 회원에게 붙을 수 있어 소유자를 갱신한다.
+     */
+    @PutMapping("/me/device-tokens")
+    @Transactional
+    public Map<String, Object> registerDeviceToken(@Valid @RequestBody DeviceTokenRequest request) {
+        Long currentUserId = AuthContext.currentMemberId();
+        String platform = request.platform().trim().toUpperCase(Locale.ROOT);
+        // upsert 문법(ON DUPLICATE KEY UPDATE ... VALUES())은 MySQL 전용이고 그중
+        // VALUES()는 8.0.20에서 폐기 예고됐다. 갱신 후 없으면 삽입하는 형태가
+        // H2로 도는 테스트와 MySQL 양쪽에서 그대로 동작한다.
+        int updated = jdbcTemplate.update("""
+                update device_tokens
+                set user_id = ?, platform = ?, last_seen_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                where token = ?
+                """, currentUserId, platform, request.token());
+        if (updated == 0) {
+            jdbcTemplate.update("""
+                    insert into device_tokens (user_id, token, platform, last_seen_at, created_at, updated_at)
+                    values (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """, currentUserId, request.token(), platform);
+        }
+        return Map.of("registered", true);
+    }
+
+    @DeleteMapping("/me/device-tokens/{token}")
+    @Transactional
+    public Map<String, Object> removeDeviceToken(@PathVariable String token) {
+        jdbcTemplate.update("delete from device_tokens where token = ? and user_id = ?",
+                token, AuthContext.currentMemberId());
+        return Map.of("removed", true);
     }
 
     @DeleteMapping("/me")
@@ -169,9 +219,11 @@ public class UserFeatureController {
                     work_zipcode = null, work_address1 = null, work_address2 = null,
                     birth_date_public = false, phone_public = false, email_public = false,
                     home_address_public = false, notification_enabled = false,
+                    notice_notification_enabled = false, club_notification_enabled = false,
                     status = 'WITHDRAWN', updated_at = CURRENT_TIMESTAMP
                 where id = ? and status <> 'WITHDRAWN'
                 """, currentUserId);
+        jdbcTemplate.update("delete from device_tokens where user_id = ?", currentUserId);
 
         return Map.of("status", "WITHDRAWN");
     }
@@ -192,8 +244,10 @@ public class UserFeatureController {
                        ot.phase as officer_phase, orole.name as officer_role_name
                 from users u
                 join majors m on m.id = u.major_id
-                join officer_terms ot on ot.current_term = true
-                join officer_histories oh on oh.user_id = u.id and oh.officer_term_id = ot.id
+                join officer_histories oh on oh.user_id = u.id
+                join officer_terms ot on ot.id = oh.officer_term_id
+                    and ot.started_at <= CURRENT_DATE
+                    and ot.ended_at >= DATE_SUB(CURRENT_DATE, INTERVAL ? DAY)
                 join officer_roles orole on orole.id = oh.officer_role_id
                 left join companies co on co.id = u.company_id
                 left join industries i on i.id = u.industry_id
@@ -201,7 +255,8 @@ public class UserFeatureController {
                   and not exists (
                       select 1 from user_blocks ub where ub.blocker_id = ? and ub.blocked_id = u.id
                   )
-                """, JdbcResponseMapper.INSTANCE, memberId, AuthContext.currentMemberId()).stream()
+                order by ot.started_at desc
+                """, JdbcResponseMapper.INSTANCE, OfficerTerm.GRACE_DAYS, memberId, AuthContext.currentMemberId()).stream()
                 .findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("임원 정보를 찾을 수 없습니다."));
         member.put("hobbies", jdbcTemplate.queryForList("""
@@ -715,6 +770,8 @@ public class UserFeatureController {
                 MarkdownImageExtractor.firstImageUrl(request.body()), clubId);
 
         Long id = jdbcTemplate.queryForObject("select max(id) from posts", Long.class);
+        String clubName = jdbcTemplate.queryForObject("select name from clubs where id = ?", String.class, clubId);
+        pushNotificationService.notifyClubPost(clubId, clubName, id, request.title().trim(), currentUserId);
         return Map.of("id", id);
     }
 
@@ -1036,8 +1093,15 @@ public class UserFeatureController {
             @Size(max = 500) String prText) {
     }
 
+    public record DeviceTokenRequest(
+            @NotBlank @Size(max = 512) String token,
+            @NotBlank String platform) {
+    }
+
     public record PreferenceUpdateRequest(
             boolean notificationEnabled,
+            boolean noticeNotificationEnabled,
+            boolean clubNotificationEnabled,
             boolean phonePublic,
             boolean emailPublic,
             boolean homeAddressPublic) {

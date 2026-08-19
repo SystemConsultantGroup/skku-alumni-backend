@@ -8,7 +8,13 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import com.scg.alumni.infrastructure.minio.MinioProperties;
+import io.minio.GetObjectArgs;
+import io.minio.MinioClient;
+import java.io.InputStream;
 import org.apache.poi.ss.usermodel.Cell;
+import org.apache.poi.ss.usermodel.ClientAnchor;
+import org.apache.poi.ss.usermodel.Drawing;
 import org.apache.poi.ss.usermodel.DataFormatter;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
@@ -38,23 +44,36 @@ import static org.springframework.http.HttpStatus.BAD_REQUEST;
 @RequestMapping("/api/v1/admin/members/excel")
 public class AdminMemberExcelController {
 
-    private static final List<String> HEADERS = List.of("학번", "이름", "학과", "입학연도", "전화번호", "이메일", "회사명", "직위", "상태");
+    /**
+     * 업로드 양식. 회원 상태는 사무처가 승인 화면에서 다루는 내부 값이라 양식에서 뺐다.
+     * 엑셀로 부은 회원은 모두 가입 대기(PENDING)로 들어오고, 승인은 회원 관리에서 한다.
+     */
+    private static final List<String> UPLOAD_HEADERS = List.of("학번", "이름", "학과", "입학연도", "전화번호", "이메일", "회사명", "직위");
+
+    /** 목록 다운로드. 사무처가 보는 자료라 상태를 포함한다. */
+    private static final List<String> DOWNLOAD_HEADERS = List.of("학번", "이름", "학과", "입학연도", "전화번호", "이메일", "회사명", "직위", "상태");
     private static final Set<String> STATUSES = Set.of("PENDING", "ACTIVE", "REJECTED");
     private static final int MAX_ROWS = 5_000;
 
+    /** 엑셀에 넣는 사진 칸 크기. 증명사진 비율(3:4)에 맞춘다. */
+    private static final int PHOTO_COLUMN_WIDTH = 14 * 256;
+    private static final short PHOTO_ROW_HEIGHT_POINTS = 90;
+
     private final JdbcTemplate jdbcTemplate;
     private final PasswordEncoder passwordEncoder;
+    private final MinioClient minioClient;
+    private final MinioProperties minioProperties;
 
     @GetMapping("/template")
     public ResponseEntity<byte[]> downloadTemplate() throws IOException {
         try (XSSFWorkbook workbook = new XSSFWorkbook(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             Sheet form = workbook.createSheet("회원 업로드 양식");
             Row header = form.createRow(0);
-            for (int index = 0; index < HEADERS.size(); index++) {
-                header.createCell(index).setCellValue(HEADERS.get(index));
+            for (int index = 0; index < UPLOAD_HEADERS.size(); index++) {
+                header.createCell(index).setCellValue(UPLOAD_HEADERS.get(index));
                 form.setColumnWidth(index, switch (index) {
                     case 0, 4 -> 18 * 256;
-                    case 1, 3, 8 -> 14 * 256;
+                    case 1, 3 -> 14 * 256;
                     default -> 24 * 256;
                 });
             }
@@ -71,8 +90,8 @@ public class AdminMemberExcelController {
                     {"이메일", "선택"},
                     {"회사명", "선택 · 없는 회사명은 새로 등록됩니다."},
                     {"직위", "선택"},
-                    {"상태", "선택 · PENDING, ACTIVE, REJECTED 중 하나 · 비워두면 PENDING"},
-                    {"제한", "첫 번째 시트 기준 최대 5,000명, 파일 크기 10MB 이하"}
+                    {"제한", "첫 번째 시트 기준 최대 5,000명, 파일 크기 10MB 이하"},
+                    {"참고", "업로드한 회원은 모두 가입 대기 상태로 들어옵니다. 승인은 회원 관리에서 합니다."}
             };
             for (int rowIndex = 0; rowIndex < guideRows.length; rowIndex++) {
                 Row row = guide.createRow(rowIndex);
@@ -98,12 +117,13 @@ public class AdminMemberExcelController {
     @GetMapping
     public ResponseEntity<byte[]> download(
             @RequestParam(required = false) String keyword,
-            @RequestParam(required = false) String memberStatus) throws IOException {
+            @RequestParam(required = false) String memberStatus,
+            @RequestParam(required = false, defaultValue = "false") boolean includePhotos) throws IOException {
         String like = StringUtils.hasText(keyword) ? "%" + keyword.trim().toLowerCase(Locale.ROOT) + "%" : null;
         String status = normalizeOptionalStatus(memberStatus);
         List<Map<String, Object>> members = jdbcTemplate.queryForList("""
                 select u.student_id, u.name, m.name as major_name, u.admission_year, u.phone, u.email,
-                       co.name as company_name, u.job_title, u.status
+                       co.name as company_name, u.job_title, u.status, u.profile_image_url
                 from users u
                 join majors m on m.id = u.major_id
                 left join companies co on co.id = u.company_id
@@ -114,8 +134,12 @@ public class AdminMemberExcelController {
 
         try (XSSFWorkbook workbook = new XSSFWorkbook(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             Sheet sheet = workbook.createSheet("회원 목록");
+            int photoColumn = DOWNLOAD_HEADERS.size();
             Row header = sheet.createRow(0);
-            for (int index = 0; index < HEADERS.size(); index++) header.createCell(index).setCellValue(HEADERS.get(index));
+            for (int index = 0; index < DOWNLOAD_HEADERS.size(); index++) header.createCell(index).setCellValue(DOWNLOAD_HEADERS.get(index));
+            if (includePhotos) header.createCell(photoColumn).setCellValue("사진");
+
+            Drawing<?> drawing = includePhotos ? sheet.createDrawingPatriarch() : null;
             int rowIndex = 1;
             for (Map<String, Object> member : members) {
                 Row row = sheet.createRow(rowIndex++);
@@ -128,11 +152,101 @@ public class AdminMemberExcelController {
                 write(row, 6, member.get("company_name"));
                 write(row, 7, member.get("job_title"));
                 write(row, 8, member.get("status"));
+                if (includePhotos) {
+                    row.setHeightInPoints(PHOTO_ROW_HEIGHT_POINTS);
+                    drawPhoto(workbook, drawing, member.get("profile_image_url"), photoColumn, row.getRowNum());
+                }
             }
-            for (int index = 0; index < HEADERS.size(); index++) sheet.autoSizeColumn(index);
+            for (int index = 0; index < DOWNLOAD_HEADERS.size(); index++) sheet.autoSizeColumn(index);
+            if (includePhotos) sheet.setColumnWidth(photoColumn, PHOTO_COLUMN_WIDTH);
             workbook.write(output);
-            return excelResponse("members.xlsx", output.toByteArray());
+            return excelResponse(includePhotos ? "members-with-photos.xlsx" : "members.xlsx", output.toByteArray());
         }
+    }
+
+    /**
+     * 사진만 따로 내려받는다.
+     *
+     * <p>엑셀에 박힌 사진은 사람과 얼굴을 맞춰보는 용도라 화질이 떨어져도 되지만,
+     * 수첩을 인쇄할 업체에는 원본을 줘야 한다. 파일명은 학번과 이름을 붙여
+     * 엑셀의 행과 바로 대조할 수 있게 한다.
+     */
+    @GetMapping("/photos")
+    public ResponseEntity<byte[]> downloadPhotos(
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String memberStatus) throws IOException {
+        String like = StringUtils.hasText(keyword) ? "%" + keyword.trim().toLowerCase(Locale.ROOT) + "%" : null;
+        String status = normalizeOptionalStatus(memberStatus);
+        List<Map<String, Object>> members = jdbcTemplate.queryForList("""
+                select u.student_id, u.name, u.profile_image_url
+                from users u
+                join majors m on m.id = u.major_id
+                left join companies co on co.id = u.company_id
+                where u.profile_image_url is not null
+                  and (? is null or lower(u.name) like ? or lower(m.name) like ? or lower(coalesce(co.name, '')) like ?)
+                  and (? is null or u.status = ?)
+                order by u.id
+                """, like, like, like, like, status, status);
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (java.util.zip.ZipOutputStream zip = new java.util.zip.ZipOutputStream(output)) {
+            Set<String> usedNames = new java.util.HashSet<>();
+            for (Map<String, Object> member : members) {
+                byte[] content = readProfileImage(member.get("profile_image_url"));
+                if (content == null) continue;
+                String entryName = uniqueEntryName(usedNames, member.get("student_id"), member.get("name"),
+                        String.valueOf(member.get("profile_image_url")));
+                zip.putNextEntry(new java.util.zip.ZipEntry(entryName));
+                zip.write(content);
+                zip.closeEntry();
+            }
+        }
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.parseMediaType("application/zip"));
+        headers.setContentDisposition(ContentDisposition.attachment().filename("member-photos.zip").build());
+        return ResponseEntity.ok().headers(headers).body(output.toByteArray());
+    }
+
+    private String uniqueEntryName(Set<String> usedNames, Object studentId, Object name, String imageUrl) {
+        String extension = imageUrl.substring(imageUrl.lastIndexOf('.'));
+        String base = (studentId == null ? "학번없음" : studentId.toString()) + "_" + name;
+        String candidate = base + extension;
+        int suffix = 2;
+        while (!usedNames.add(candidate)) candidate = base + "-" + suffix++ + extension;
+        return candidate;
+    }
+
+    /** 저장된 프로필 URL에서 오브젝트 이름을 떼어내 스토리지에서 바로 읽는다. */
+    private byte[] readProfileImage(Object imageUrl) {
+        if (imageUrl == null) return null;
+        String url = imageUrl.toString();
+        String fileName = url.substring(url.lastIndexOf('/') + 1);
+        try (InputStream input = minioClient.getObject(GetObjectArgs.builder()
+                .bucket(minioProperties.bucket())
+                .object("profiles/" + fileName)
+                .build())) {
+            return input.readAllBytes();
+        } catch (Exception exception) {
+            // 사진 한 장 때문에 전체 다운로드가 실패하면 안 된다.
+            return null;
+        }
+    }
+
+    private void drawPhoto(XSSFWorkbook workbook, Drawing<?> drawing, Object imageUrl, int column, int rowNumber) {
+        byte[] content = readProfileImage(imageUrl);
+        if (content == null) return;
+        int pictureType = String.valueOf(imageUrl).toLowerCase(Locale.ROOT).endsWith(".png")
+                ? XSSFWorkbook.PICTURE_TYPE_PNG
+                : XSSFWorkbook.PICTURE_TYPE_JPEG;
+        int pictureIndex = workbook.addPicture(content, pictureType);
+        ClientAnchor anchor = workbook.getCreationHelper().createClientAnchor();
+        anchor.setCol1(column);
+        anchor.setRow1(rowNumber);
+        anchor.setCol2(column + 1);
+        anchor.setRow2(rowNumber + 1);
+        // 셀에 꽉 채운다. 원본 비율이 제각각이라 다소 눌리지만, 이 사진은
+        // 이름과 얼굴을 맞춰보는 용도이고 원본은 zip으로 따로 받는다.
+        drawing.createPicture(anchor, pictureIndex);
     }
 
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -162,24 +276,22 @@ public class AdminMemberExcelController {
                 if (majorId == null) throw badRequest(excelRow + "행: 등록되지 않은 학과입니다. (" + majorName + ")");
                 String companyName = value(row, 6, formatter);
                 Long companyId = StringUtils.hasText(companyName) ? findOrCreateCompany(companyName.trim()) : null;
-                String status = value(row, 8, formatter).toUpperCase(Locale.ROOT);
-                if (!StringUtils.hasText(status)) status = "PENDING";
-                if (!STATUSES.contains(status)) throw badRequest(excelRow + "행: 상태는 PENDING, ACTIVE, REJECTED 중 하나여야 합니다.");
+                // 기존 회원을 다시 부어도 이미 승인된 상태를 되돌리지 않는다.
                 int count = jdbcTemplate.update("""
                         update users set name = ?, major_id = ?, admission_year = ?, phone = ?, email = ?,
-                            company_id = ?, job_title = ?, status = ?, updated_at = CURRENT_TIMESTAMP
+                            company_id = ?, job_title = ?, updated_at = CURRENT_TIMESTAMP
                         where student_id = ?
                         """, name, majorId, admissionYear, nullable(row, 4, formatter), nullable(row, 5, formatter),
-                        companyId, nullable(row, 7, formatter), status, studentId);
+                        companyId, nullable(row, 7, formatter), studentId);
                 if (count > 0) {
                     updated++;
                 } else {
                     jdbcTemplate.update("""
                             insert into users (student_id, name, password, category, degree, major_id, admission_year,
                                 phone, email, company_id, job_title, status, created_at, updated_at)
-                            values (?, ?, ?, 'UNDERGRADUATE', 'BACHELOR', ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                            values (?, ?, ?, 'UNDERGRADUATE', 'BACHELOR', ?, ?, ?, ?, ?, ?, 'PENDING', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                             """, studentId, name, temporaryPassword, majorId, admissionYear, nullable(row, 4, formatter),
-                            nullable(row, 5, formatter), companyId, nullable(row, 7, formatter), status);
+                            nullable(row, 5, formatter), companyId, nullable(row, 7, formatter));
                     created++;
                 }
             }
@@ -206,9 +318,9 @@ public class AdminMemberExcelController {
 
     private void validateHeaders(Row row, DataFormatter formatter) {
         if (row == null) throw badRequest("첫 행에 컬럼명이 필요합니다.");
-        for (int index = 0; index < HEADERS.size(); index++) {
-            if (!HEADERS.get(index).equals(value(row, index, formatter))) {
-                throw badRequest("첫 행의 컬럼 순서는 다음과 같아야 합니다: " + String.join(", ", HEADERS));
+        for (int index = 0; index < UPLOAD_HEADERS.size(); index++) {
+            if (!UPLOAD_HEADERS.get(index).equals(value(row, index, formatter))) {
+                throw badRequest("첫 행의 컬럼 순서는 다음과 같아야 합니다: " + String.join(", ", UPLOAD_HEADERS));
             }
         }
     }
@@ -247,7 +359,7 @@ public class AdminMemberExcelController {
     }
 
     private boolean isBlank(Row row, DataFormatter formatter) {
-        for (int index = 0; index < HEADERS.size(); index++) if (StringUtils.hasText(value(row, index, formatter))) return false;
+        for (int index = 0; index < UPLOAD_HEADERS.size(); index++) if (StringUtils.hasText(value(row, index, formatter))) return false;
         return true;
     }
 

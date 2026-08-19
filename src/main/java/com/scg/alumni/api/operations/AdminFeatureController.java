@@ -2,9 +2,16 @@ package com.scg.alumni.api.operations;
 
 import com.scg.alumni.api.common.CursorPageResponse;
 import com.scg.alumni.api.common.MarkdownImageExtractor;
+import com.scg.alumni.global.security.AdminRoleGuard;
 import com.scg.alumni.global.security.AuthContext;
+import com.scg.alumni.infrastructure.push.PushNotificationService;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
+import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -12,6 +19,7 @@ import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.jdbc.core.simple.SimpleJdbcInsert;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -30,7 +38,12 @@ import org.springframework.web.server.ResponseStatusException;
 @RequestMapping("/api/v1/admin")
 public class AdminFeatureController {
 
+    private static final java.time.ZoneId SEOUL = java.time.ZoneId.of("Asia/Seoul");
+
     private final JdbcTemplate jdbcTemplate;
+    private final PushNotificationService pushNotificationService;
+    private final AdminRoleGuard adminRoleGuard;
+    private final PasswordEncoder passwordEncoder;
 
     @GetMapping("/dashboard")
     public Map<String, Object> findDashboard() {
@@ -196,6 +209,7 @@ public class AdminFeatureController {
     public CursorPageResponse<Map<String, Object>> findPayments(
             @RequestParam(required = false) String keyword,
             @RequestParam(required = false) String status,
+            @RequestParam(required = false) Long officerTermId,
             @RequestParam(required = false) Long cursor,
             @RequestParam(required = false) Integer size
     ) {
@@ -217,13 +231,117 @@ public class AdminFeatureController {
                       or lower(coalesce(orole.name, '')) like ?
                   )
                   and (? is null or pr.status = ?)
+                  and (? is null or pr.officer_term_id = ?)
                 order by pr.id desc
                 limit ?
                 """, JdbcResponseMapper.INSTANCE,
                 cursor, cursor,
                 normalizedKeyword, normalizedKeyword, normalizedKeyword, normalizedKeyword,
-                normalizedStatus, normalizedStatus, CursorPageFactory.queryLimit(size));
+                normalizedStatus, normalizedStatus, officerTermId, officerTermId,
+                CursorPageFactory.queryLimit(size));
         return CursorPageFactory.from(rows, size);
+    }
+
+    /**
+     * 최근 추이. 수치 하나로는 늘고 있는지 줄고 있는지 알 수 없다.
+     *
+     * <p>회의에서 "날짜별로 몇 명이 들어왔느냐가 지금은 없다"고 나온 부분이다.
+     * 가입이 없는 날도 0으로 채워 보낸다. 빠진 날짜를 화면이 메우게 하면
+     * 그래프마다 같은 일을 반복해야 한다.
+     */
+    @GetMapping("/dashboard/trends")
+    public List<Map<String, Object>> findDashboardTrends(
+            @RequestParam(required = false, defaultValue = "30") int days
+    ) {
+        int range = Math.min(Math.max(days, 7), 180);
+        Map<String, Integer> signups = countByDay("select date(created_at) as day, count(*) as total from users where created_at >= ? group by day", range);
+        Map<String, Integer> payments = countByDay("select date(paid_at) as day, count(*) as total from payment_records where status = 'PAID' and paid_at >= ? group by day", range);
+
+        LocalDate today = LocalDate.now(SEOUL);
+        List<Map<String, Object>> trends = new ArrayList<>();
+        for (int offset = range - 1; offset >= 0; offset--) {
+            LocalDate day = today.minusDays(offset);
+            String key = day.toString();
+            trends.add(Map.of(
+                    "date", key,
+                    "signups", signups.getOrDefault(key, 0),
+                    "payments", payments.getOrDefault(key, 0)));
+        }
+        return trends;
+    }
+
+    private Map<String, Integer> countByDay(String sql, int days) {
+        LocalDate from = LocalDate.now(SEOUL).minusDays(days - 1L);
+        Map<String, Integer> counts = new LinkedHashMap<>();
+        jdbcTemplate.query(sql, resultSet -> {
+            counts.put(resultSet.getDate("day").toLocalDate().toString(), resultSet.getInt("total"));
+        }, from);
+        return counts;
+    }
+
+    @GetMapping("/officer-terms")
+    public List<Map<String, Object>> findOfficerTerms() {
+        return jdbcTemplate.query("""
+                select id, generation, phase, started_at, ended_at, current_term
+                from officer_terms
+                order by generation desc, phase desc
+                """, JdbcResponseMapper.INSTANCE);
+    }
+
+    /**
+     * 특정 대·기의 회비 납부를 기록한다.
+     *
+     * <p>회원들은 임기를 "대·기"가 아니라 연도로 기억해서, 1기 기간 중에 2기분을
+     * 미리 보내는 일이 흔하다. 그래서 현행 임기로 자동 생성된 레코드를 뒤집는
+     * 것만으로는 부족하고, 사무처가 어느 대·기에 대한 납부인지 직접 지정할 수
+     * 있어야 한다. 회의에서 정리된 요건이다.
+     */
+    @PostMapping("/payments")
+    @Transactional
+    public Map<String, Object> registerPayment(@Valid @RequestBody PaymentRegisterRequest request) {
+        String status = normalizeRequiredStatus(request.status(), "PAID", "UNPAID");
+        Map<String, Object> term = jdbcTemplate.query("""
+                select id, generation, phase
+                from officer_terms
+                where id = ?
+                """, JdbcResponseMapper.INSTANCE, request.officerTermId())
+                .stream()
+                .findFirst()
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "해당 임기를 찾을 수 없습니다."));
+
+        Long officerRoleId = request.officerRoleId() != null
+                ? request.officerRoleId()
+                : findLatestOfficerRoleId(request.userId());
+        if (officerRoleId == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "직책 이력이 없는 회원입니다. 직책을 함께 지정해주세요.");
+        }
+        String roleName = jdbcTemplate.queryForObject("select name from officer_roles where id = ?", String.class, officerRoleId);
+
+        ensureCurrentOfficerHistory(request.userId(), request.officerTermId(), officerRoleId);
+        ensurePaymentRecord(request.userId(), request.officerTermId(), paymentAmount(roleName));
+
+        jdbcTemplate.update("""
+                update payment_records
+                set status = ?, paid_at = case when ? = 'PAID' then CURRENT_TIMESTAMP else null end, updated_at = CURRENT_TIMESTAMP
+                where user_id = ?
+                  and officer_term_id = ?
+                """, status, status, request.userId(), request.officerTermId());
+        jdbcTemplate.update("""
+                update officer_histories
+                set payment_status = ?, updated_at = CURRENT_TIMESTAMP
+                where user_id = ?
+                  and officer_term_id = ?
+                """, status, request.userId(), request.officerTermId());
+
+        Long paymentId = jdbcTemplate.queryForObject("""
+                select id from payment_records where user_id = ? and officer_term_id = ?
+                """, Long.class, request.userId(), request.officerTermId());
+        audit("REGISTER_PAYMENT", "payment_record", paymentId);
+        return Map.of(
+                "id", paymentId,
+                "status", status,
+                "generation", term.get("generation"),
+                "phase", term.get("phase"));
     }
 
     @PatchMapping("/payments/{id}/status")
@@ -380,11 +498,111 @@ public class AdminFeatureController {
     @GetMapping("/managers")
     public List<Map<String, Object>> findManagers() {
         return jdbcTemplate.query("""
-                select a.id, a.email, a.name, a.position, a.active, ar.name as role_name, a.created_at
+                select a.id, a.email, a.name, a.position, a.active, ar.id as role_id, ar.name as role_name, a.created_at
                 from admins a
                 join admin_roles ar on ar.id = a.admin_role_id
                 order by a.id
                 """, JdbcResponseMapper.INSTANCE);
+    }
+
+    @GetMapping("/manager-roles")
+    public List<Map<String, Object>> findManagerRoles() {
+        return jdbcTemplate.query("""
+                select id, name, description
+                from admin_roles
+                order by id
+                """, JdbcResponseMapper.INSTANCE);
+    }
+
+    /**
+     * 운영자 계정을 발급한다.
+     *
+     * <p>직원마다 계정을 따로 줘야 누가 무엇을 처리했는지 감사 로그로 남는다.
+     * 계정 공유를 막자는 것이 회의에서 나온 취지다.
+     */
+    @PostMapping("/managers")
+    @Transactional
+    public Map<String, Object> createManager(@Valid @RequestBody ManagerCreateRequest request) {
+        adminRoleGuard.requireMaster();
+        String email = request.email().trim().toLowerCase(Locale.ROOT);
+        Integer duplicated = jdbcTemplate.queryForObject("select count(*) from admins where email = ?", Integer.class, email);
+        if (duplicated != null && duplicated > 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "이미 등록된 이메일입니다.");
+        }
+        requireExistingRole(request.adminRoleId());
+        jdbcTemplate.update("""
+                insert into admins (email, name, password, position, admin_role_id, active, created_at, updated_at)
+                values (?, ?, ?, ?, ?, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """, email, request.name().trim(), passwordEncoder.encode(request.password()),
+                text(request.position()), request.adminRoleId());
+        Long id = jdbcTemplate.queryForObject("select id from admins where email = ?", Long.class, email);
+        audit("CREATE_MANAGER", "admin", id);
+        return Map.of("id", id, "email", email);
+    }
+
+    @PatchMapping("/managers/{id}")
+    @Transactional
+    public Map<String, Object> updateManager(@PathVariable Long id, @Valid @RequestBody ManagerUpdateRequest request) {
+        adminRoleGuard.requireMaster();
+        requireExistingManager(id);
+        if (request.adminRoleId() != null) {
+            requireExistingRole(request.adminRoleId());
+            jdbcTemplate.update("update admins set admin_role_id = ?, updated_at = CURRENT_TIMESTAMP where id = ?",
+                    request.adminRoleId(), id);
+        }
+        if (StringUtils.hasText(request.name())) {
+            jdbcTemplate.update("update admins set name = ?, updated_at = CURRENT_TIMESTAMP where id = ?", request.name().trim(), id);
+        }
+        if (request.position() != null) {
+            jdbcTemplate.update("update admins set position = ?, updated_at = CURRENT_TIMESTAMP where id = ?", text(request.position()), id);
+        }
+        if (StringUtils.hasText(request.password())) {
+            jdbcTemplate.update("update admins set password = ?, updated_at = CURRENT_TIMESTAMP where id = ?",
+                    passwordEncoder.encode(request.password()), id);
+        }
+        audit("UPDATE_MANAGER", "admin", id);
+        return Map.of("id", id);
+    }
+
+    /** 권한 회수. 감사 로그의 주체로 남아 있어야 하므로 계정을 지우지 않고 비활성화한다. */
+    @PatchMapping("/managers/{id}/active")
+    @Transactional
+    public Map<String, Object> updateManagerActive(@PathVariable Long id, @Valid @RequestBody ManagerActiveRequest request) {
+        adminRoleGuard.requireMaster();
+        requireExistingManager(id);
+        if (!request.isActive() && id.equals(AuthContext.currentAdminId())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "자기 계정의 권한은 회수할 수 없습니다.");
+        }
+        if (!request.isActive() && isLastActiveMaster(id)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "마지막 사무총장 계정의 권한은 회수할 수 없습니다.");
+        }
+        jdbcTemplate.update("update admins set active = ?, updated_at = CURRENT_TIMESTAMP where id = ?", request.isActive(), id);
+        audit(request.isActive() ? "ACTIVATE_MANAGER" : "DEACTIVATE_MANAGER", "admin", id);
+        return Map.of("id", id, "active", request.isActive());
+    }
+
+    private void requireExistingManager(Long id) {
+        Integer count = jdbcTemplate.queryForObject("select count(*) from admins where id = ?", Integer.class, id);
+        if (count == null || count == 0) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "운영자를 찾을 수 없습니다.");
+        }
+    }
+
+    private void requireExistingRole(Long adminRoleId) {
+        Integer count = jdbcTemplate.queryForObject("select count(*) from admin_roles where id = ?", Integer.class, adminRoleId);
+        if (count == null || count == 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "존재하지 않는 권한입니다.");
+        }
+    }
+
+    private boolean isLastActiveMaster(Long id) {
+        Integer remaining = jdbcTemplate.queryForObject("""
+                select count(*)
+                from admins a
+                join admin_roles ar on ar.id = a.admin_role_id
+                where ar.name = 'MASTER' and a.active = true and a.id <> ?
+                """, Integer.class, id);
+        return remaining == null || remaining == 0;
     }
 
     @GetMapping("/posts")
@@ -448,11 +666,16 @@ public class AdminFeatureController {
         values.put("status", "PUBLISHED");
         values.put("post_kind", postKind);
 
+        // 넣을 컬럼을 명시하지 않으면 SimpleJdbcInsert가 테이블의 모든 컬럼을 대상으로
+        // 삼아 값이 없는 자리에 NULL을 보낸다. created_at은 NOT NULL이고 기본값은
+        // 컬럼을 생략했을 때만 적용되므로, 그대로 두면 공지 작성이 항상 실패한다.
         Number id = new SimpleJdbcInsert(jdbcTemplate)
                 .withTableName("posts")
+                .usingColumns(values.keySet().toArray(String[]::new))
                 .usingGeneratedKeyColumns("id")
                 .executeAndReturnKey(values);
         audit("CREATE_OFFICIAL_POST", "post", id.longValue());
+        pushNotificationService.notifyOfficialPost(id.longValue(), postKind, request.title().trim());
         return Map.of("id", id.longValue(), "status", "PUBLISHED");
     }
 
@@ -774,6 +997,21 @@ public class AdminFeatureController {
         return count != null && count > 0;
     }
 
+    /** 다른 임기의 납부를 기록할 때 쓸 직책. 가장 최근 임기의 직책을 그대로 이어 쓴다. */
+    private Long findLatestOfficerRoleId(Long userId) {
+        return jdbcTemplate.query("""
+                select oh.officer_role_id
+                from officer_histories oh
+                join officer_terms ot on ot.id = oh.officer_term_id
+                where oh.user_id = ?
+                order by ot.generation desc, ot.phase desc
+                limit 1
+                """, (resultSet, rowNum) -> resultSet.getLong(1), userId)
+                .stream()
+                .findFirst()
+                .orElse(null);
+    }
+
     private int paymentAmount(String roleName) {
         if ("회장".equals(roleName)) {
             return 1_000_000;
@@ -822,6 +1060,39 @@ public class AdminFeatureController {
 
     public record StatusUpdateRequest(
             @NotBlank String status
+    ) {
+    }
+
+    public record ManagerCreateRequest(
+            @NotBlank @Email String email,
+            @NotBlank String name,
+            @NotBlank @Size(min = 8, message = "비밀번호는 8자 이상이어야 합니다.") String password,
+            String position,
+            @NotNull Long adminRoleId
+    ) {
+    }
+
+    public record ManagerUpdateRequest(
+            String name,
+            String position,
+            @Size(min = 8, message = "비밀번호는 8자 이상이어야 합니다.") String password,
+            Long adminRoleId
+    ) {
+    }
+
+    public record ManagerActiveRequest(
+            @NotNull Boolean active
+    ) {
+        public boolean isActive() {
+            return Boolean.TRUE.equals(active);
+        }
+    }
+
+    public record PaymentRegisterRequest(
+            @NotNull Long userId,
+            @NotNull Long officerTermId,
+            @NotBlank String status,
+            Long officerRoleId
     ) {
     }
 

@@ -1,6 +1,7 @@
 package com.scg.alumni.api.operations;
 
 import com.scg.alumni.global.security.AuthContext;
+import com.scg.alumni.infrastructure.image.ImageCompressor;
 import com.scg.alumni.infrastructure.minio.MinioProperties;
 import io.minio.BucketExistsArgs;
 import io.minio.GetObjectArgs;
@@ -38,7 +39,8 @@ import static org.springframework.http.HttpStatus.NOT_FOUND;
 @RequestMapping("/api/v1/profile-images")
 public class ProfileImageController {
 
-    private static final long MAX_FILE_SIZE = 10L * 1024 * 1024;
+    /** 수신 한도. 이 크기까지 받아서 {@link ImageCompressor}가 줄인다. */
+    private static final long MAX_UPLOAD_SIZE = 30L * 1024 * 1024;
     private static final Set<String> ALLOWED_CONTENT_TYPES = Set.of(
             MediaType.IMAGE_JPEG_VALUE,
             MediaType.IMAGE_PNG_VALUE,
@@ -48,12 +50,18 @@ public class ProfileImageController {
     private final JdbcTemplate jdbcTemplate;
     private final MinioClient minioClient;
     private final MinioProperties minioProperties;
+    private final ImageCompressor imageCompressor;
 
     @PostMapping
     public Map<String, String> upload(@RequestPart("file") MultipartFile file) {
         validate(file);
-        String contentType = file.getContentType().toLowerCase(Locale.ROOT);
-        String fileName = UUID.randomUUID() + extension(contentType);
+        ImageCompressor.Result image;
+        try {
+            image = imageCompressor.compress(file, file.getContentType().toLowerCase(Locale.ROOT));
+        } catch (java.io.IOException exception) {
+            throw new IllegalStateException("프로필 사진을 변환하지 못했습니다.", exception);
+        }
+        String fileName = UUID.randomUUID() + extension(image.contentType());
         String objectName = "profiles/" + fileName;
 
         try {
@@ -61,8 +69,8 @@ public class ProfileImageController {
             minioClient.putObject(PutObjectArgs.builder()
                     .bucket(minioProperties.bucket())
                     .object(objectName)
-                    .contentType(contentType)
-                    .stream(file.getInputStream(), file.getSize(), -1L)
+                    .contentType(image.contentType())
+                    .stream(new java.io.ByteArrayInputStream(image.bytes()), image.size(), -1L)
                     .build());
         } catch (Exception exception) {
             throw new IllegalStateException("프로필 사진 저장에 실패했습니다.", exception);
@@ -112,8 +120,8 @@ public class ProfileImageController {
         if (file.isEmpty()) {
             throw new ResponseStatusException(BAD_REQUEST, "이미지 파일을 선택해주세요.");
         }
-        if (file.getSize() > MAX_FILE_SIZE) {
-            throw new ResponseStatusException(BAD_REQUEST, "이미지는 10MB 이하만 업로드할 수 있습니다.");
+        if (file.getSize() > MAX_UPLOAD_SIZE) {
+            throw new ResponseStatusException(BAD_REQUEST, "이미지는 30MB 이하만 업로드할 수 있습니다.");
         }
         String contentType = file.getContentType();
         if (contentType == null || !ALLOWED_CONTENT_TYPES.contains(contentType.toLowerCase(Locale.ROOT))) {
