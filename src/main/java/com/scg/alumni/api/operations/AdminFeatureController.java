@@ -10,6 +10,8 @@ import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
+import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -35,6 +37,8 @@ import org.springframework.web.server.ResponseStatusException;
 @RequiredArgsConstructor
 @RequestMapping("/api/v1/admin")
 public class AdminFeatureController {
+
+    private static final java.time.ZoneId SEOUL = java.time.ZoneId.of("Asia/Seoul");
 
     private final JdbcTemplate jdbcTemplate;
     private final PushNotificationService pushNotificationService;
@@ -236,6 +240,43 @@ public class AdminFeatureController {
                 normalizedStatus, normalizedStatus, officerTermId, officerTermId,
                 CursorPageFactory.queryLimit(size));
         return CursorPageFactory.from(rows, size);
+    }
+
+    /**
+     * 최근 추이. 수치 하나로는 늘고 있는지 줄고 있는지 알 수 없다.
+     *
+     * <p>회의에서 "날짜별로 몇 명이 들어왔느냐가 지금은 없다"고 나온 부분이다.
+     * 가입이 없는 날도 0으로 채워 보낸다. 빠진 날짜를 화면이 메우게 하면
+     * 그래프마다 같은 일을 반복해야 한다.
+     */
+    @GetMapping("/dashboard/trends")
+    public List<Map<String, Object>> findDashboardTrends(
+            @RequestParam(required = false, defaultValue = "30") int days
+    ) {
+        int range = Math.min(Math.max(days, 7), 180);
+        Map<String, Integer> signups = countByDay("select date(created_at) as day, count(*) as total from users where created_at >= ? group by day", range);
+        Map<String, Integer> payments = countByDay("select date(paid_at) as day, count(*) as total from payment_records where status = 'PAID' and paid_at >= ? group by day", range);
+
+        LocalDate today = LocalDate.now(SEOUL);
+        List<Map<String, Object>> trends = new ArrayList<>();
+        for (int offset = range - 1; offset >= 0; offset--) {
+            LocalDate day = today.minusDays(offset);
+            String key = day.toString();
+            trends.add(Map.of(
+                    "date", key,
+                    "signups", signups.getOrDefault(key, 0),
+                    "payments", payments.getOrDefault(key, 0)));
+        }
+        return trends;
+    }
+
+    private Map<String, Integer> countByDay(String sql, int days) {
+        LocalDate from = LocalDate.now(SEOUL).minusDays(days - 1L);
+        Map<String, Integer> counts = new LinkedHashMap<>();
+        jdbcTemplate.query(sql, resultSet -> {
+            counts.put(resultSet.getDate("day").toLocalDate().toString(), resultSet.getInt("total"));
+        }, from);
+        return counts;
     }
 
     @GetMapping("/officer-terms")
