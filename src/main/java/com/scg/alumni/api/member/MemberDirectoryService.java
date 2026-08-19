@@ -5,6 +5,9 @@ import com.scg.alumni.domain.member.Member;
 import com.scg.alumni.domain.member.MemberRepository;
 import com.scg.alumni.domain.member.MemberStatus;
 import com.scg.alumni.domain.officer.OfficerPaymentStatus;
+import com.scg.alumni.domain.officer.OfficerTerm;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import com.scg.alumni.global.security.AuthContext;
 import java.util.List;
 import java.util.Locale;
@@ -40,6 +43,7 @@ public class MemberDirectoryService {
             Long cursor,
             Integer size
     ) {
+        LocalDate today = LocalDate.now(ZoneId.of("Asia/Seoul"));
         int pageSize = normalizeSize(size);
         Long currentUserId = AuthContext.currentMemberIdOrNull();
         List<Long> blockedMemberIds = currentUserId == null ? List.of(-1L) : jdbcTemplate.queryForList(
@@ -66,6 +70,8 @@ public class MemberDirectoryService {
                 blockedMemberIds,
                 MemberStatus.ACTIVE,
                 OfficerPaymentStatus.PAID,
+                today,
+                today.minusDays(OfficerTerm.GRACE_DAYS),
                 PageRequest.of(0, pageSize + 1)
         );
 

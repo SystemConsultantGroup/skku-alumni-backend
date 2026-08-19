@@ -50,7 +50,9 @@ public class OfficerHistory extends BaseTimeEntity {
     @Column(nullable = false)
     private OfficerPaymentStatus paymentStatus;
 
+    /** 현행 임기이거나, 막 끝난 임기라도 유예 기간 안이면 유효한 납부로 본다. */
     public boolean isCurrentPaid() {
-        return paymentStatus == OfficerPaymentStatus.PAID && officerTerm.isCurrentTerm();
+        return paymentStatus == OfficerPaymentStatus.PAID
+                && officerTerm.isAccessible(java.time.LocalDate.now(java.time.ZoneId.of("Asia/Seoul")));
     }
 }

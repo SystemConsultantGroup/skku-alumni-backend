@@ -24,7 +24,7 @@ public interface MemberRepository extends JpaRepository<Member, Long> {
                   join h.officerTerm term
                   where h.member = m
                     and h.paymentStatus = :paymentStatus
-                    and term.currentTerm = true
+                    and term.startedAt <= :today and term.endedAt >= :graceFloor
                     and (:officerTermId is null or term.id = :officerTermId)
                     and (:officerRoleId is null or h.officerRole.id = :officerRoleId)
               )
@@ -39,15 +39,15 @@ public interface MemberRepository extends JpaRepository<Member, Long> {
                       or replace(lower(coalesce(company.name, '')), ' ', '') like :keyword
                       or replace(lower(coalesce(m.jobTitle, '')), ' ', '') like :keyword
                       or replace(lower(coalesce(industry.name, '')), ' ', '') like :keyword
-                      or exists (select allHistory.id from OfficerHistory allHistory where allHistory.member = m and allHistory.paymentStatus = :paymentStatus and allHistory.officerTerm.currentTerm = true and (replace(lower(allHistory.officerRole.name), ' ', '') like :keyword or replace(lower(concat(str(allHistory.officerTerm.generation), '대', str(allHistory.officerTerm.phase), '기')), ' ', '') like :keyword))
+                      or exists (select allHistory.id from OfficerHistory allHistory where allHistory.member = m and allHistory.paymentStatus = :paymentStatus and allHistory.officerTerm.startedAt <= :today and allHistory.officerTerm.endedAt >= :graceFloor and (replace(lower(allHistory.officerRole.name), ' ', '') like :keyword or replace(lower(concat(str(allHistory.officerTerm.generation), '대', str(allHistory.officerTerm.phase), '기')), ' ', '') like :keyword))
                       or replace(lower(concat(coalesce(m.workAddress1, ''), coalesce(m.workAddress2, ''))), ' ', '') like :keyword
                       or (m.homeAddressPublic = true and replace(lower(concat(coalesce(m.homeAddress1, ''), coalesce(m.homeAddress2, ''))), ' ', '') like :keyword)
                   ))
                   or (:searchType = 'major' and (replace(lower(m.major.name), ' ', '') like :keyword or replace(lower(coalesce(displayMajor.name, '')), ' ', '') like :keyword))
                   or (:searchType = 'industry' and replace(lower(coalesce(industry.name, '')), ' ', '') like :keyword)
                   or (:searchType = 'admission' and (replace(lower(coalesce(m.studentId, '')), ' ', '') like :studentIdKeyword or str(m.admissionYear) like :admissionYearKeyword))
-                  or (:searchType = 'term' and exists (select termHistory.id from OfficerHistory termHistory where termHistory.member = m and termHistory.paymentStatus = :paymentStatus and termHistory.officerTerm.currentTerm = true and replace(lower(concat(str(termHistory.officerTerm.generation), '대', str(termHistory.officerTerm.phase), '기')), ' ', '') like :keyword))
-                  or (:searchType = 'role' and exists (select roleHistory.id from OfficerHistory roleHistory where roleHistory.member = m and roleHistory.paymentStatus = :paymentStatus and roleHistory.officerTerm.currentTerm = true and replace(lower(roleHistory.officerRole.name), ' ', '') like :keyword))
+                  or (:searchType = 'term' and exists (select termHistory.id from OfficerHistory termHistory where termHistory.member = m and termHistory.paymentStatus = :paymentStatus and termHistory.officerTerm.startedAt <= :today and termHistory.officerTerm.endedAt >= :graceFloor and replace(lower(concat(str(termHistory.officerTerm.generation), '대', str(termHistory.officerTerm.phase), '기')), ' ', '') like :keyword))
+                  or (:searchType = 'role' and exists (select roleHistory.id from OfficerHistory roleHistory where roleHistory.member = m and roleHistory.paymentStatus = :paymentStatus and roleHistory.officerTerm.startedAt <= :today and roleHistory.officerTerm.endedAt >= :graceFloor and replace(lower(roleHistory.officerRole.name), ' ', '') like :keyword))
                   or (:searchType = 'region' and (replace(lower(concat(coalesce(m.workAddress1, ''), coalesce(m.workAddress2, ''))), ' ', '') like :keyword or (m.homeAddressPublic = true and replace(lower(concat(coalesce(m.homeAddress1, ''), coalesce(m.homeAddress2, ''))), ' ', '') like :keyword)))
               )
               and (:majorId is null or m.major.id = :majorId or displayMajor.id = :majorId)
@@ -87,6 +87,8 @@ public interface MemberRepository extends JpaRepository<Member, Long> {
             @Param("blockedMemberIds") List<Long> blockedMemberIds,
             @Param("memberStatus") MemberStatus memberStatus,
             @Param("paymentStatus") OfficerPaymentStatus paymentStatus,
+            @Param("today") java.time.LocalDate today,
+            @Param("graceFloor") java.time.LocalDate graceFloor,
             Pageable pageable
     );
 }

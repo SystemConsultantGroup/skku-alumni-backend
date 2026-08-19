@@ -116,9 +116,13 @@ public class Member extends BaseTimeEntity {
     @OneToMany(mappedBy = "member")
     private List<OfficerHistory> officerHistories = new ArrayList<>();
 
+    /**
+     * 지금 유효한 납부 이력. 유예 기간 때문에 직전 임기와 현행 임기가 함께
+     * 유효할 수 있으므로, 둘 다 냈다면 최신 임기 쪽을 보여준다.
+     */
     public Optional<OfficerHistory> currentPaidOfficerHistory() {
         return officerHistories.stream()
                 .filter(OfficerHistory::isCurrentPaid)
-                .findFirst();
+                .max(java.util.Comparator.comparing(history -> history.getOfficerTerm().getStartedAt()));
     }
 }
