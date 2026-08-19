@@ -149,15 +149,21 @@ public class UserFeatureController {
     @Transactional
     public Map<String, Object> registerDeviceToken(@Valid @RequestBody DeviceTokenRequest request) {
         Long currentUserId = AuthContext.currentMemberId();
-        jdbcTemplate.update("""
-                insert into device_tokens (user_id, token, platform, last_seen_at, created_at, updated_at)
-                values (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                on duplicate key update
-                    user_id = values(user_id),
-                    platform = values(platform),
-                    last_seen_at = CURRENT_TIMESTAMP,
-                    updated_at = CURRENT_TIMESTAMP
-                """, currentUserId, request.token(), request.platform().trim().toUpperCase(Locale.ROOT));
+        String platform = request.platform().trim().toUpperCase(Locale.ROOT);
+        // upsert 문법(ON DUPLICATE KEY UPDATE ... VALUES())은 MySQL 전용이고 그중
+        // VALUES()는 8.0.20에서 폐기 예고됐다. 갱신 후 없으면 삽입하는 형태가
+        // H2로 도는 테스트와 MySQL 양쪽에서 그대로 동작한다.
+        int updated = jdbcTemplate.update("""
+                update device_tokens
+                set user_id = ?, platform = ?, last_seen_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                where token = ?
+                """, currentUserId, platform, request.token());
+        if (updated == 0) {
+            jdbcTemplate.update("""
+                    insert into device_tokens (user_id, token, platform, last_seen_at, created_at, updated_at)
+                    values (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """, currentUserId, request.token(), platform);
+        }
         return Map.of("registered", true);
     }
 

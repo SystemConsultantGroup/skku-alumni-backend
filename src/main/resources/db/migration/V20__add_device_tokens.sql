@@ -5,6 +5,10 @@
 --
 -- 같은 회원이 여러 기기를 쓸 수 있으므로 회원당 여러 행을 허용하고, 토큰 자체는
 -- 유일하다. 기기를 물려주면 같은 토큰이 다른 회원에게 붙을 수 있어 갱신으로 처리한다.
+--
+-- 토큰 길이를 512로 잡고 접두사 색인(token(255)) 대신 전체 컬럼에 유일 제약을 건다.
+-- 접두사 색인은 MySQL 전용이라 H2로 도는 테스트에서 깨지고, utf8mb4 기준 512자는
+-- 2048바이트라 InnoDB 색인 한도(3072바이트) 안에 들어온다.
 
 CREATE TABLE device_tokens (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -14,7 +18,7 @@ CREATE TABLE device_tokens (
     last_seen_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT uk_device_tokens_token UNIQUE (token(255)),
+    CONSTRAINT uk_device_tokens_token UNIQUE (token),
     CONSTRAINT fk_device_tokens_user FOREIGN KEY (user_id) REFERENCES users (id)
 );
 
