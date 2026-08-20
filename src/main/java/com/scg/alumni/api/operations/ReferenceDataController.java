@@ -75,8 +75,10 @@ public class ReferenceDataController {
                 from officer_terms
                 order by generation desc, phase desc
                 """, JdbcResponseMapper.INSTANCE));
+        // 기여금까지 함께 내려준다. 소개 화면의 기여금 표가 사무처가 설정한 값을
+        // 그대로 보여줘야 한다. 화면에 금액을 따로 적어두면 조정될 때마다 어긋난다.
         response.put("officerRoles", jdbcTemplate.query("""
-                select id, name, sort_order
+                select id, name, sort_order, dues_amount, dues_note
                 from officer_roles
                 order by sort_order, id
                 """, JdbcResponseMapper.INSTANCE));

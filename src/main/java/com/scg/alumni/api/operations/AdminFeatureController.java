@@ -9,6 +9,7 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.PositiveOrZero;
 import jakarta.validation.constraints.Size;
 import java.time.LocalDate;
 import java.util.ArrayList;
@@ -509,6 +510,41 @@ public class AdminFeatureController {
                 join admin_roles ar on ar.id = a.admin_role_id
                 order by a.id
                 """, JdbcResponseMapper.INSTANCE);
+    }
+
+    /** 직책과 기여금. 회비 관리 화면이 금액을 보여주고 고치는 데 쓴다. */
+    @GetMapping("/officer-roles")
+    public List<Map<String, Object>> findOfficerRoles() {
+        return jdbcTemplate.query("""
+                select id, name, sort_order, dues_amount, dues_note
+                from officer_roles
+                order by sort_order, id
+                """, JdbcResponseMapper.INSTANCE);
+    }
+
+    /**
+     * 직책별 기여금을 바꾼다.
+     *
+     * <p>이미 만들어진 회비 내역의 금액은 건드리지 않는다. 지난 임기에 부과된
+     * 금액을 소급해 바꾸면 장부가 흔들린다. 새로 등록하는 납부부터 적용된다.
+     */
+    @PatchMapping("/officer-roles/{id}")
+    @Transactional
+    public Map<String, Object> updateOfficerRoleDues(
+            @PathVariable Long id,
+            @Valid @RequestBody OfficerRoleDuesRequest request
+    ) {
+        Integer count = jdbcTemplate.queryForObject("select count(*) from officer_roles where id = ?", Integer.class, id);
+        if (count == null || count == 0) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "직책을 찾을 수 없습니다.");
+        }
+        jdbcTemplate.update("""
+                update officer_roles
+                set dues_amount = ?, dues_note = ?, updated_at = CURRENT_TIMESTAMP
+                where id = ?
+                """, request.duesAmount(), text(request.duesNote()), id);
+        audit("UPDATE_OFFICER_ROLE_DUES", "officer_role", id);
+        return Map.of("id", id, "duesAmount", request.duesAmount());
     }
 
     @GetMapping("/manager-roles")
@@ -1019,33 +1055,25 @@ public class AdminFeatureController {
     }
 
     /**
-     * 직책별 임원 기여금 기본값.
+     * 직책별 임원 기여금.
      *
-     * <p>총동창회 회비안내의 금액표를 그대로 옮겼다. 지금까지는 회장 100만원,
-     * 그 외 전부 30만원으로 계산해서 이사(10만원)와 감사(100만원)가 실제와
-     * 달랐다.
+     * <p>금액은 officer_roles 에 있다. 회비는 임기와 회칙에 따라 바뀌는 값이라
+     * 코드에 박아두면 조정할 때마다 배포해야 한다. 사무처가 회비 관리 화면에서
+     * 직접 고친다.
      *
-     * <p>부회장 중 공직자·교육자·은퇴동문은 50만원, 상임이사 중 공직자는
-     * 20만원이고 고문은 자율이다. 이런 예외는 회원 정보만으로 판정할 수 없어
-     * 사무처가 등록할 때 금액을 직접 지정한다.
+     * <p>0은 "정해진 금액 없음"이다. 회장처럼 약정으로 정하는 직책이 여기 해당한다.
+     * 이 경우 납부를 등록할 때 사무처가 금액을 직접 넣어야 한다.
      */
-    private static final Map<String, Integer> OFFICER_DUES = Map.of(
-            "회장", 100_000_000,
-            "감사", 1_000_000,
-            "부회장", 1_000_000,
-            "자문위원", 300_000,
-            "상임이사", 300_000,
-            "이사", 100_000,
-            "고문", 0);
-
     private int paymentAmount(String roleName) {
-        Integer amount = OFFICER_DUES.get(roleName);
-        if (amount == null) {
-            // 표에 없는 직책이 생기면 사무처가 금액을 직접 넣도록 0으로 둔다.
-            // 임의의 기본값을 넣으면 틀린 금액이 조용히 회비 내역에 남는다.
-            return 0;
-        }
-        return amount;
+        Integer amount = jdbcTemplate.query("""
+                select dues_amount
+                from officer_roles
+                where name = ?
+                """, (resultSet, rowNum) -> resultSet.getInt(1), roleName)
+                .stream()
+                .findFirst()
+                .orElse(0);
+        return amount == null ? 0 : amount;
     }
 
     private String text(Object value) {
@@ -1115,6 +1143,12 @@ public class AdminFeatureController {
         public boolean isActive() {
             return Boolean.TRUE.equals(active);
         }
+    }
+
+    public record OfficerRoleDuesRequest(
+            @NotNull @PositiveOrZero Integer duesAmount,
+            String duesNote
+    ) {
     }
 
     public record PaymentRegisterRequest(
