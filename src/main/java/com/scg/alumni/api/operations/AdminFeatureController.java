@@ -318,7 +318,13 @@ public class AdminFeatureController {
         String roleName = jdbcTemplate.queryForObject("select name from officer_roles where id = ?", String.class, officerRoleId);
 
         ensureCurrentOfficerHistory(request.userId(), request.officerTermId(), officerRoleId);
-        ensurePaymentRecord(request.userId(), request.officerTermId(), paymentAmount(roleName));
+        // 공직자 부회장(50만원)처럼 예외가 있어 사무처가 금액을 지정할 수 있다.
+        int amount = request.amount() != null ? request.amount() : paymentAmount(roleName);
+        ensurePaymentRecord(request.userId(), request.officerTermId(), amount);
+        jdbcTemplate.update("""
+                update payment_records set amount = ?, updated_at = CURRENT_TIMESTAMP
+                where user_id = ? and officer_term_id = ?
+                """, amount, request.userId(), request.officerTermId());
 
         jdbcTemplate.update("""
                 update payment_records
@@ -1012,11 +1018,34 @@ public class AdminFeatureController {
                 .orElse(null);
     }
 
+    /**
+     * 직책별 임원 기여금 기본값.
+     *
+     * <p>총동창회 회비안내의 금액표를 그대로 옮겼다. 지금까지는 회장 100만원,
+     * 그 외 전부 30만원으로 계산해서 이사(10만원)와 감사(100만원)가 실제와
+     * 달랐다.
+     *
+     * <p>부회장 중 공직자·교육자·은퇴동문은 50만원, 상임이사 중 공직자는
+     * 20만원이고 고문은 자율이다. 이런 예외는 회원 정보만으로 판정할 수 없어
+     * 사무처가 등록할 때 금액을 직접 지정한다.
+     */
+    private static final Map<String, Integer> OFFICER_DUES = Map.of(
+            "회장", 100_000_000,
+            "감사", 1_000_000,
+            "부회장", 1_000_000,
+            "자문위원", 300_000,
+            "상임이사", 300_000,
+            "이사", 100_000,
+            "고문", 0);
+
     private int paymentAmount(String roleName) {
-        if ("회장".equals(roleName)) {
-            return 1_000_000;
+        Integer amount = OFFICER_DUES.get(roleName);
+        if (amount == null) {
+            // 표에 없는 직책이 생기면 사무처가 금액을 직접 넣도록 0으로 둔다.
+            // 임의의 기본값을 넣으면 틀린 금액이 조용히 회비 내역에 남는다.
+            return 0;
         }
-        return 300_000;
+        return amount;
     }
 
     private String text(Object value) {
@@ -1092,7 +1121,9 @@ public class AdminFeatureController {
             @NotNull Long userId,
             @NotNull Long officerTermId,
             @NotBlank String status,
-            Long officerRoleId
+            Long officerRoleId,
+            /** 비우면 직책별 기본 금액을 쓴다. 예외 금액일 때만 지정한다. */
+            Integer amount
     ) {
     }
 
