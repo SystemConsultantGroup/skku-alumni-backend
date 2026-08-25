@@ -2,13 +2,24 @@ package com.scg.alumni.api.common;
 
 import org.springframework.boot.servlet.autoconfigure.MultipartProperties;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.util.unit.DataSize;
+import org.springframework.web.ErrorResponse;
+import org.springframework.web.HttpMediaTypeNotAcceptableException;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import org.springframework.web.multipart.MultipartException;
+import org.springframework.web.multipart.support.MissingServletRequestPartException;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 @RestControllerAdvice
 public class ApiExceptionHandler {
@@ -55,6 +66,30 @@ public class ApiExceptionHandler {
         return ResponseEntity
                 .status(exception.getStatusCode())
                 .body(new ApiErrorResponse("AA" + statusCode, reason));
+    }
+
+    /**
+     * 스프링이 컨트롤러에 들여보내지 못한 요청(틀린 Content-Type, 빠진 파라미터,
+     * 없는 경로 등)도 이 어드바이스로 온다. 클라이언트 잘못이니 아래의 catch-all이
+     * 500으로 뭉개기 전에 원래 상태 코드로 돌려준다.
+     */
+    @ExceptionHandler({
+            HttpMediaTypeNotSupportedException.class,
+            HttpMediaTypeNotAcceptableException.class,
+            HttpRequestMethodNotSupportedException.class,
+            MissingServletRequestParameterException.class,
+            MissingServletRequestPartException.class,
+            MultipartException.class,
+            HttpMessageNotReadableException.class,
+            MethodArgumentTypeMismatchException.class,
+            NoResourceFoundException.class})
+    public ResponseEntity<ApiErrorResponse> handleClientError(Exception exception) {
+        HttpStatusCode status = exception instanceof ErrorResponse errorResponse
+                ? errorResponse.getStatusCode()
+                : HttpStatus.BAD_REQUEST;
+        return ResponseEntity
+                .status(status)
+                .body(new ApiErrorResponse("AA" + status.value(), "요청 형식이 올바르지 않습니다."));
     }
 
     @ExceptionHandler(Exception.class)
