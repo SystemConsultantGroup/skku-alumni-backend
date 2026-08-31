@@ -28,12 +28,13 @@ public class ReferenceDataController {
                        (
                            select count(*)
                            from users u
-                           where u.industry_id = i.id
+                           where u.industry_id = i.id and u.deleted_at is null
                        ) as member_count,
                        (
                            select count(*)
                            from posts p
                            where p.industry_id = i.id
+                             and p.deleted_at is null
                              and p.post_kind = 'BUSINESS'
                              and p.status = 'PUBLISHED'
                        ) as business_post_count
@@ -45,26 +46,30 @@ public class ReferenceDataController {
                        c.description, c.industry_id, i.name as industry_name
                 from companies c
                 left join industries i on i.id = c.industry_id
+                where c.deleted_at is null
                 order by c.name
                 """, JdbcResponseMapper.INSTANCE));
         response.put("hobbies", jdbcTemplate.query("""
-                select h.id, h.name, count(uh.id) as member_count
+                select h.id, h.name, count(u.id) as member_count
                 from hobbies h
-                left join user_hobbies uh on uh.hobby_id = h.id
+                left join user_hobbies uh on uh.hobby_id = h.id and uh.deleted_at is null
+                left join users u on u.id = uh.user_id and u.deleted_at is null
+                where h.deleted_at is null
                 group by h.id, h.name
                 order by member_count desc, h.name
                 """, JdbcResponseMapper.INSTANCE));
         response.put("regions", jdbcTemplate.queryForList("""
                 select region from (
                     select distinct substring_index(trim(work_address1), ' ', 1) as region
-                    from companies where work_address1 is not null and trim(work_address1) <> ''
+                    from companies where deleted_at is null and work_address1 is not null and trim(work_address1) <> ''
                     union
                     select distinct substring_index(trim(work_address1), ' ', 1) as region
-                    from users where work_address1 is not null and trim(work_address1) <> ''
+                    from users where deleted_at is null and work_address1 is not null and trim(work_address1) <> ''
                     union
                     select distinct substring_index(trim(home_address1), ' ', 1) as region
                     from users
-                    where home_address_public = true
+                    where deleted_at is null
+                      and home_address_public = true
                       and home_address1 is not null and trim(home_address1) <> ''
                 ) regions
                 where region <> ''

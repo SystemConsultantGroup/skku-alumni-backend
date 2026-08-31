@@ -50,24 +50,24 @@ public class AdminFeatureController {
     public Map<String, Object> findDashboard() {
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("stats", Map.of(
-                "activeMembers", count("select count(*) from users where status = 'ACTIVE'"),
-                "pendingMembers", count("select count(*) from users where status = 'PENDING'"),
-                "withdrawnMembers", count("select count(*) from users where status = 'WITHDRAWN'"),
+                "activeMembers", count("select count(*) from users where deleted_at is null and status = 'ACTIVE'"),
+                "pendingMembers", count("select count(*) from users where deleted_at is null and status = 'PENDING'"),
+                "withdrawnMembers", count("select count(*) from users where deleted_at is null and status = 'WITHDRAWN'"),
                 "paidCurrentOfficers", count("""
                         select count(*)
                         from officer_histories oh
                         join officer_terms ot on ot.id = oh.officer_term_id
-                        where ot.current_term = true and oh.payment_status = 'PAID'
+                        where oh.deleted_at is null and ot.current_term = true and oh.payment_status = 'PAID'
                         """),
                 "unpaidCurrentOfficers", count("""
                         select count(*)
                         from officer_histories oh
                         join officer_terms ot on ot.id = oh.officer_term_id
-                        where ot.current_term = true and oh.payment_status = 'UNPAID'
+                        where oh.deleted_at is null and ot.current_term = true and oh.payment_status = 'UNPAID'
                         """),
                 "pendingApplications", count("select count(*) from member_applications where status = 'PENDING'"),
-                "pendingReports", count("select count(*) from reports where status = 'PENDING'"),
-                "pendingAsisSync", count("select count(*) from profile_change_logs where synced = false")
+                "pendingReports", count("select count(*) from reports where deleted_at is null and status = 'PENDING'"),
+                "pendingAsisSync", count("select count(*) from profile_change_logs where deleted_at is null and synced = false")
         ));
         response.put("recentApplications", jdbcTemplate.query("""
                 select id, name, major_name, admission_year, desired_role, status, created_at
@@ -78,8 +78,9 @@ public class AdminFeatureController {
         response.put("recentPayments", jdbcTemplate.query("""
                 select pr.id, u.name, orole.name as officer_role_name, pr.amount, pr.status, pr.paid_at
                 from payment_records pr
-                join users u on u.id = pr.user_id
+                join users u on u.id = pr.user_id and u.deleted_at is null
                 join officer_histories oh on oh.user_id = pr.user_id and oh.officer_term_id = pr.officer_term_id
+                    and oh.deleted_at is null
                 join officer_roles orole on orole.id = oh.officer_role_id
                 order by pr.id desc
                 limit 5
@@ -92,25 +93,29 @@ public class AdminFeatureController {
             @RequestParam(required = false) String keyword,
             @RequestParam(required = false) String paymentStatus,
             @RequestParam(required = false) String memberStatus,
+            @RequestParam(required = false) Boolean includeDeleted,
             @RequestParam(required = false) Long cursor,
             @RequestParam(required = false) Integer size
     ) {
         String normalizedKeyword = normalizeLike(keyword);
         String normalizedPaymentStatus = normalizeUpper(paymentStatus);
         String normalizedMemberStatus = normalizeUpper(memberStatus);
+        boolean showDeleted = Boolean.TRUE.equals(includeDeleted);
         List<Map<String, Object>> rows = jdbcTemplate.query("""
                 select u.id, u.name, u.kingo_id as user_login_id, u.student_id, u.phone, u.email, u.status,
+                       u.deleted_at, u.profile_image_url,
                        m.name as major_name, co.name as company_name, u.job_title,
                        ot.generation, ot.phase, orole.name as officer_role_name,
                        coalesce(oh.payment_status, pr.status) as payment_status
                 from users u
-                join majors m on m.id = u.major_id
-                left join companies co on co.id = u.company_id
+                left join majors m on m.id = u.major_id
+                left join companies co on co.id = u.company_id and co.deleted_at is null
                 left join officer_terms ot on ot.current_term = true
-                left join officer_histories oh on oh.user_id = u.id and oh.officer_term_id = ot.id
+                left join officer_histories oh on oh.user_id = u.id and oh.officer_term_id = ot.id and oh.deleted_at is null
                 left join officer_roles orole on orole.id = oh.officer_role_id
-                left join payment_records pr on pr.user_id = u.id and pr.officer_term_id = ot.id
+                left join payment_records pr on pr.user_id = u.id and pr.officer_term_id = ot.id and pr.deleted_at is null
                 where (? is null or u.id < ?)
+                  and (? = true or u.deleted_at is null)
                   and (? is null or lower(u.name) like ? or lower(m.name) like ? or lower(coalesce(co.name, '')) like ?)
                   and (? is null or coalesce(oh.payment_status, pr.status) = ?)
                   and (? is null or u.status = ?)
@@ -118,6 +123,7 @@ public class AdminFeatureController {
                 limit ?
                 """, JdbcResponseMapper.INSTANCE,
                 cursor, cursor,
+                showDeleted,
                 normalizedKeyword, normalizedKeyword, normalizedKeyword, normalizedKeyword,
                 normalizedPaymentStatus, normalizedPaymentStatus,
                 normalizedMemberStatus, normalizedMemberStatus,
@@ -220,9 +226,10 @@ public class AdminFeatureController {
                 select pr.id, u.name, u.student_id, pr.amount, pr.status, pr.paid_at,
                        ot.generation, ot.phase, orole.name as officer_role_name
                 from payment_records pr
-                join users u on u.id = pr.user_id
+                join users u on u.id = pr.user_id and u.deleted_at is null
                 join officer_terms ot on ot.id = pr.officer_term_id
                 join officer_histories oh on oh.user_id = pr.user_id and oh.officer_term_id = pr.officer_term_id
+                    and oh.deleted_at is null
                 join officer_roles orole on orole.id = oh.officer_role_id
                 where (? is null or pr.id < ?)
                   and (
@@ -255,8 +262,8 @@ public class AdminFeatureController {
             @RequestParam(required = false, defaultValue = "30") int days
     ) {
         int range = Math.min(Math.max(days, 7), 180);
-        Map<String, Integer> signups = countByDay("select date(created_at) as day, count(*) as total from users where created_at >= ? group by day", range);
-        Map<String, Integer> payments = countByDay("select date(paid_at) as day, count(*) as total from payment_records where status = 'PAID' and paid_at >= ? group by day", range);
+        Map<String, Integer> signups = countByDay("select date(created_at) as day, count(*) as total from users where deleted_at is null and created_at >= ? group by day", range);
+        Map<String, Integer> payments = countByDay("select date(paid_at) as day, count(*) as total from payment_records where deleted_at is null and status = 'PAID' and paid_at >= ? group by day", range);
 
         LocalDate today = LocalDate.now(SEOUL);
         List<Map<String, Object>> trends = new ArrayList<>();
@@ -338,6 +345,7 @@ public class AdminFeatureController {
                 set payment_status = ?, updated_at = CURRENT_TIMESTAMP
                 where user_id = ?
                   and officer_term_id = ?
+                  and deleted_at is null
                 """, status, request.userId(), request.officerTermId());
 
         Long paymentId = jdbcTemplate.queryForObject("""
@@ -361,7 +369,7 @@ public class AdminFeatureController {
         Map<String, Object> payment = jdbcTemplate.query("""
                 select user_id, officer_term_id
                 from payment_records
-                where id = ?
+                where id = ? and deleted_at is null
                 """, JdbcResponseMapper.INSTANCE, id)
                 .stream()
                 .findFirst()
@@ -377,6 +385,7 @@ public class AdminFeatureController {
                 set payment_status = ?, updated_at = CURRENT_TIMESTAMP
                 where user_id = ?
                   and officer_term_id = ?
+                  and deleted_at is null
                 """, status, payment.get("userId"), payment.get("officerTermId"));
         audit("UPDATE_PAYMENT_STATUS", "payment_record", id);
         return Map.of("id", id, "status", status);
@@ -394,7 +403,7 @@ public class AdminFeatureController {
                 select pcl.id, pcl.field_name, pcl.old_value, pcl.new_value, pcl.synced,
                        pcl.changed_at, pcl.synced_at, u.id as user_id, u.name, u.student_id
                 from profile_change_logs pcl
-                join users u on u.id = pcl.user_id
+                join users u on u.id = pcl.user_id and u.deleted_at is null
                 where (? is null or pcl.id < ?)
                   and (
                       ? is null
@@ -439,8 +448,8 @@ public class AdminFeatureController {
                        r.status, r.admin_memo, r.created_at, r.resolved_at,
                        reporter.name as reporter_name, p.title as target_title
                 from reports r
-                join users reporter on reporter.id = r.reporter_id
-                join posts p on p.id = r.target_post_id
+                join users reporter on reporter.id = r.reporter_id and reporter.deleted_at is null
+                join posts p on p.id = r.target_post_id and p.deleted_at is null
                 where (? is null or r.id < ?)
                   and (? is null or r.status = ?)
                 order by r.id desc
@@ -471,8 +480,8 @@ public class AdminFeatureController {
                                case when author.status = 'WITHDRAWN' then '탈퇴한 사용자'
                                     else coalesce(author.name, admin_author.name) end as author_name
                         from reports r
-                        join posts p on p.id = r.target_post_id
-                        left join users author on author.id = p.user_id
+                        join posts p on p.id = r.target_post_id and p.deleted_at is null
+                        left join users author on author.id = p.user_id and author.deleted_at is null
                         left join admins admin_author on admin_author.id = p.admin_id
                         where lower(r.target_type) = 'post'
                         group by p.id, p.title, p.status, p.post_kind,
@@ -667,11 +676,11 @@ public class AdminFeatureController {
                        c.id as club_id, c.name as club_name, c.category as club_category,
                        count(r.id) as report_count
                 from posts p
-                left join users u on u.id = p.user_id
+                left join users u on u.id = p.user_id and u.deleted_at is null
                 left join admins a on a.id = p.admin_id
                 left join industries i on i.id = p.industry_id
                 left join clubs c on c.id = p.club_id
-                left join reports r on r.target_post_id = p.id
+                left join reports r on r.target_post_id = p.id and r.deleted_at is null
                 where (? is null or p.id < ?)
                   and (? is null or lower(p.title) like ? or lower(coalesce(p.body, '')) like ?
                        or lower(coalesce(u.name, a.name)) like ?)
@@ -763,7 +772,7 @@ public class AdminFeatureController {
     @GetMapping("/posts/{id}/reports")
     public List<Map<String, Object>> findPostReports(@PathVariable Long id) {
         Integer postCount = jdbcTemplate.queryForObject(
-                "select count(*) from posts where id = ?", Integer.class, id);
+                "select count(*) from posts where id = ? and deleted_at is null", Integer.class, id);
         if (postCount == null || postCount == 0) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "게시글을 찾을 수 없습니다.");
         }
@@ -774,7 +783,7 @@ public class AdminFeatureController {
                        case when u.status = 'WITHDRAWN' then '탈퇴한 사용자'
                             else coalesce(u.name, '알 수 없는 사용자') end as reporter_name
                 from reports r
-                left join users u on u.id = r.reporter_id
+                left join users u on u.id = r.reporter_id and u.deleted_at is null
                 where r.target_post_id = ?
                   and lower(r.target_type) = 'post'
                 order by r.id desc
@@ -878,7 +887,7 @@ public class AdminFeatureController {
                 storedStudentId, text(application.get("name")), majorId, admissionYear, phone,
                 text(application.get("email")), companyId, text(application.get("jobTitle")));
 
-        return jdbcTemplate.queryForObject("select id from users where student_id = ?", Long.class, storedStudentId);
+        return jdbcTemplate.queryForObject("select id from users where student_id = ? and deleted_at is null", Long.class, storedStudentId);
     }
 
     private Long findExistingApplicationUser(String name, Integer admissionYear, Long majorId, String phone, String studentId) {
@@ -974,13 +983,17 @@ public class AdminFeatureController {
                 .findFirst()
                 .orElse(null);
         if (existingId != null) {
+            // 지운 직장이면 되살려 쓴다. 이름에 유일 제약이 있어 같은 이름을 새로 만들 수 없다.
+            jdbcTemplate.update(
+                    "update companies set deleted_at = null, updated_at = CURRENT_TIMESTAMP where id = ? and deleted_at is not null",
+                    existingId);
             return existingId;
         }
         jdbcTemplate.update("""
                 insert into companies (name, created_at, updated_at)
                 values (?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """, companyName);
-        return jdbcTemplate.queryForObject("select id from companies where name = ?", Long.class, companyName);
+        return jdbcTemplate.queryForObject("select id from companies where name = ? and deleted_at is null", Long.class, companyName);
     }
 
     private void ensureCurrentOfficerHistory(Long userId, Long officerTermId, Long officerRoleId) {
@@ -993,7 +1006,7 @@ public class AdminFeatureController {
         if (count != null && count > 0) {
             jdbcTemplate.update("""
                     update officer_histories
-                    set officer_role_id = ?, updated_at = CURRENT_TIMESTAMP
+                    set officer_role_id = ?, deleted_at = null, updated_at = CURRENT_TIMESTAMP
                     where user_id = ?
                       and officer_term_id = ?
                     """, officerRoleId, userId, officerTermId);
@@ -1017,6 +1030,11 @@ public class AdminFeatureController {
                   and officer_term_id = ?
                 """, Integer.class, userId, officerTermId);
         if (count != null && count > 0) {
+            jdbcTemplate.update("""
+                    update payment_records
+                    set deleted_at = null, updated_at = CURRENT_TIMESTAMP
+                    where user_id = ? and officer_term_id = ? and deleted_at is not null
+                    """, userId, officerTermId);
             return;
         }
         jdbcTemplate.update("""
@@ -1032,7 +1050,9 @@ public class AdminFeatureController {
                 from officer_histories oh
                 join officer_terms ot on ot.id = oh.officer_term_id
                 left join payment_records pr on pr.user_id = oh.user_id and pr.officer_term_id = oh.officer_term_id
+                    and pr.deleted_at is null
                 where oh.user_id = ?
+                  and oh.deleted_at is null
                   and ot.current_term = true
                   and (oh.payment_status = 'PAID' or pr.status = 'PAID')
                 """, Integer.class, userId);
@@ -1045,7 +1065,7 @@ public class AdminFeatureController {
                 select oh.officer_role_id
                 from officer_histories oh
                 join officer_terms ot on ot.id = oh.officer_term_id
-                where oh.user_id = ?
+                where oh.user_id = ? and oh.deleted_at is null
                 order by ot.generation desc, ot.phase desc
                 limit 1
                 """, (resultSet, rowNum) -> resultSet.getLong(1), userId)

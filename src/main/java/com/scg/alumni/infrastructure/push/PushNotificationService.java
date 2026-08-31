@@ -47,7 +47,9 @@ public class PushNotificationService {
                 select dt.token
                 from device_tokens dt
                 join users u on u.id = dt.user_id
-                where u.status = 'ACTIVE'
+                where dt.deleted_at is null
+                  and u.deleted_at is null
+                  and u.status = 'ACTIVE'
                   and u.notification_enabled = true
                   and u.notice_notification_enabled = true
                 """, String.class);
@@ -63,8 +65,10 @@ public class PushNotificationService {
                 from device_tokens dt
                 join users u on u.id = dt.user_id
                 join club_members cm on cm.user_id = u.id
-                where cm.club_id = ?
-                  and cm.left_at is null
+                where dt.deleted_at is null
+                  and u.deleted_at is null
+                  and cm.club_id = ?
+                  and cm.left_at is null and cm.deleted_at is null
                   and u.status = 'ACTIVE'
                   and u.notification_enabled = true
                   and u.club_notification_enabled = true

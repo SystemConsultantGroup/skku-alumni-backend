@@ -16,6 +16,7 @@ public interface MemberRepository extends JpaRepository<Member, Long> {
             left join m.company company
             left join m.industry industry
             where m.status = :memberStatus
+              and m.deletedAt is null
               and (:cursorId is null or m.id < :cursorId)
               and m.id not in :blockedMemberIds
               and exists (
@@ -23,6 +24,7 @@ public interface MemberRepository extends JpaRepository<Member, Long> {
                   from OfficerHistory h
                   join h.officerTerm term
                   where h.member = m
+                    and h.deletedAt is null
                     and h.paymentStatus = :paymentStatus
                     and term.startedAt <= :today and term.endedAt >= :graceFloor
                     and (:officerTermId is null or term.id = :officerTermId)
@@ -39,15 +41,15 @@ public interface MemberRepository extends JpaRepository<Member, Long> {
                       or replace(lower(coalesce(company.name, '')), ' ', '') like :keyword
                       or replace(lower(coalesce(m.jobTitle, '')), ' ', '') like :keyword
                       or replace(lower(coalesce(industry.name, '')), ' ', '') like :keyword
-                      or exists (select allHistory.id from OfficerHistory allHistory where allHistory.member = m and allHistory.paymentStatus = :paymentStatus and allHistory.officerTerm.startedAt <= :today and allHistory.officerTerm.endedAt >= :graceFloor and (replace(lower(allHistory.officerRole.name), ' ', '') like :keyword or replace(lower(concat(str(allHistory.officerTerm.generation), '대', str(allHistory.officerTerm.phase), '기')), ' ', '') like :keyword))
+                      or exists (select allHistory.id from OfficerHistory allHistory where allHistory.member = m and allHistory.deletedAt is null and allHistory.paymentStatus = :paymentStatus and allHistory.officerTerm.startedAt <= :today and allHistory.officerTerm.endedAt >= :graceFloor and (replace(lower(allHistory.officerRole.name), ' ', '') like :keyword or replace(lower(concat(str(allHistory.officerTerm.generation), '대', str(allHistory.officerTerm.phase), '기')), ' ', '') like :keyword))
                       or replace(lower(concat(coalesce(m.workAddress1, ''), coalesce(m.workAddress2, ''))), ' ', '') like :keyword
                       or (m.homeAddressPublic = true and replace(lower(concat(coalesce(m.homeAddress1, ''), coalesce(m.homeAddress2, ''))), ' ', '') like :keyword)
                   ))
                   or (:searchType = 'major' and (replace(lower(m.major.name), ' ', '') like :keyword or replace(lower(coalesce(displayMajor.name, '')), ' ', '') like :keyword))
                   or (:searchType = 'industry' and replace(lower(coalesce(industry.name, '')), ' ', '') like :keyword)
                   or (:searchType = 'admission' and (replace(lower(coalesce(m.studentId, '')), ' ', '') like :studentIdKeyword or str(m.admissionYear) like :admissionYearKeyword))
-                  or (:searchType = 'term' and exists (select termHistory.id from OfficerHistory termHistory where termHistory.member = m and termHistory.paymentStatus = :paymentStatus and termHistory.officerTerm.startedAt <= :today and termHistory.officerTerm.endedAt >= :graceFloor and replace(lower(concat(str(termHistory.officerTerm.generation), '대', str(termHistory.officerTerm.phase), '기')), ' ', '') like :keyword))
-                  or (:searchType = 'role' and exists (select roleHistory.id from OfficerHistory roleHistory where roleHistory.member = m and roleHistory.paymentStatus = :paymentStatus and roleHistory.officerTerm.startedAt <= :today and roleHistory.officerTerm.endedAt >= :graceFloor and replace(lower(roleHistory.officerRole.name), ' ', '') like :keyword))
+                  or (:searchType = 'term' and exists (select termHistory.id from OfficerHistory termHistory where termHistory.member = m and termHistory.deletedAt is null and termHistory.paymentStatus = :paymentStatus and termHistory.officerTerm.startedAt <= :today and termHistory.officerTerm.endedAt >= :graceFloor and replace(lower(concat(str(termHistory.officerTerm.generation), '대', str(termHistory.officerTerm.phase), '기')), ' ', '') like :keyword))
+                  or (:searchType = 'role' and exists (select roleHistory.id from OfficerHistory roleHistory where roleHistory.member = m and roleHistory.deletedAt is null and roleHistory.paymentStatus = :paymentStatus and roleHistory.officerTerm.startedAt <= :today and roleHistory.officerTerm.endedAt >= :graceFloor and replace(lower(roleHistory.officerRole.name), ' ', '') like :keyword))
                   or (:searchType = 'region' and (replace(lower(concat(coalesce(m.workAddress1, ''), coalesce(m.workAddress2, ''))), ' ', '') like :keyword or (m.homeAddressPublic = true and replace(lower(concat(coalesce(m.homeAddress1, ''), coalesce(m.homeAddress2, ''))), ' ', '') like :keyword)))
               )
               and (:majorId is null or m.major.id = :majorId or displayMajor.id = :majorId)
@@ -65,6 +67,7 @@ public interface MemberRepository extends JpaRepository<Member, Long> {
                       select memberHobby.id
                       from MemberHobby memberHobby
                       where memberHobby.member = m
+                        and memberHobby.deletedAt is null
                         and memberHobby.hobby.id = :hobbyId
                   )
               )

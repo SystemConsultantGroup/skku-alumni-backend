@@ -50,6 +50,9 @@ public class OfficerHistory extends BaseTimeEntity {
     @Column(nullable = false)
     private OfficerPaymentStatus paymentStatus;
 
+    /** 관리자가 지운 임원 이력. 값이 있으면 조회에서 제외한다. */
+    private java.time.LocalDateTime deletedAt;
+
     /** 현행 임기이거나, 막 끝난 임기라도 유예 기간 안이면 유효한 납부로 본다. */
     public boolean isCurrentPaid() {
         return paymentStatus == OfficerPaymentStatus.PAID
