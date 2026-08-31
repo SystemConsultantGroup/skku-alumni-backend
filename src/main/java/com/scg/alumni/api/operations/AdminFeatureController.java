@@ -223,7 +223,7 @@ public class AdminFeatureController {
         String normalizedKeyword = normalizeLike(keyword);
         String normalizedStatus = normalizeUpper(status);
         List<Map<String, Object>> rows = jdbcTemplate.query("""
-                select pr.id, u.name, u.student_id, pr.amount, pr.status, pr.paid_at,
+                select pr.id, pr.user_id, u.name, u.student_id, pr.amount, pr.status, pr.paid_at,
                        ot.generation, ot.phase, orole.name as officer_role_name
                 from payment_records pr
                 join users u on u.id = pr.user_id and u.deleted_at is null
@@ -460,7 +460,8 @@ public class AdminFeatureController {
         List<Map<String, Object>> rows = jdbcTemplate.query("""
                 select r.id, r.target_type, r.target_post_id, r.reason, r.reason_others,
                        r.status, r.admin_memo, r.created_at, r.resolved_at,
-                       reporter.name as reporter_name, p.title as target_title
+                       r.reporter_id, reporter.name as reporter_name,
+                       p.title as target_title, p.user_id as target_author_id
                 from reports r
                 join users reporter on reporter.id = r.reporter_id and reporter.deleted_at is null
                 join posts p on p.id = r.target_post_id and p.deleted_at is null
@@ -491,6 +492,7 @@ public class AdminFeatureController {
                                count(r.id) as report_count,
                                sum(case when r.status = 'PENDING' then 1 else 0 end) as pending_count,
                                max(r.created_at) as last_reported_at,
+                               author.id as author_id,
                                case when author.status = 'WITHDRAWN' then '탈퇴한 사용자'
                                     else coalesce(author.name, admin_author.name) end as author_name
                         from reports r
@@ -499,7 +501,7 @@ public class AdminFeatureController {
                         left join admins admin_author on admin_author.id = p.admin_id
                         where lower(r.target_type) = 'post'
                         group by p.id, p.title, p.status, p.post_kind,
-                                 author.status, author.name, admin_author.name
+                                 author.id, author.status, author.name, admin_author.name
                     ) summary
                 ) ranked
                 where (? is null or ranked.cursor_id > ?)
@@ -684,6 +686,7 @@ public class AdminFeatureController {
         String normalizedStatus = normalizeUpper(status);
         List<Map<String, Object>> rows = jdbcTemplate.query("""
                 select p.id, p.title, p.body, p.thumbnail_url, p.post_kind, p.status, p.created_at, p.updated_at,
+                       u.id as author_id,
                        case when u.status = 'WITHDRAWN' then '탈퇴한 사용자'
                             else coalesce(u.name, a.name) end as author_name,
                        i.name as industry_name,
@@ -706,7 +709,7 @@ public class AdminFeatureController {
                       or (? = false and p.post_kind not in ('NOTICE', 'NEWS'))
                   )
                 group by p.id, p.title, p.body, p.thumbnail_url, p.post_kind, p.status, p.created_at, p.updated_at,
-                         u.name, u.status, a.name, i.name, c.id, c.name, c.category
+                         u.id, u.name, u.status, a.name, i.name, c.id, c.name, c.category
                 order by p.id desc
                 limit ?
                 """, JdbcResponseMapper.INSTANCE,
