@@ -287,6 +287,20 @@ public class AdminFeatureController {
         return counts;
     }
 
+    /** 회원 상세에서 동호회 가입을 붙일 때 고를 목록. */
+    @GetMapping("/clubs")
+    public List<Map<String, Object>> findClubs() {
+        return jdbcTemplate.query("""
+                select c.id, c.name, c.category,
+                       (
+                           select count(*) from club_members cm
+                           where cm.club_id = c.id and cm.left_at is null and cm.deleted_at is null
+                       ) as member_count
+                from clubs c
+                order by c.name
+                """, JdbcResponseMapper.INSTANCE);
+    }
+
     @GetMapping("/officer-terms")
     public List<Map<String, Object>> findOfficerTerms() {
         return jdbcTemplate.query("""

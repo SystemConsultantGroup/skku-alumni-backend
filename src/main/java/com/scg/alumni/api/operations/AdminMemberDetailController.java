@@ -202,7 +202,7 @@ public class AdminMemberDetailController {
                 select uh.id, uh.hobby_id, h.name, uh.created_at
                 from user_hobbies uh
                 join hobbies h on h.id = uh.hobby_id
-                where uh.user_id = ? and uh.deleted_at is null
+                where uh.user_id = ? and uh.deleted_at is null and h.deleted_at is null
                 order by h.name
                 """, JdbcResponseMapper.INSTANCE, memberId);
     }
