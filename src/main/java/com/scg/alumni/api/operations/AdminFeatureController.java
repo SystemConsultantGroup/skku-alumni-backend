@@ -796,7 +796,7 @@ public class AdminFeatureController {
 
         return jdbcTemplate.query("""
                 select r.id, r.reason, r.reason_others, r.status, r.admin_memo,
-                       r.created_at, r.resolved_at,
+                       r.created_at, r.resolved_at, u.id as reporter_id,
                        case when u.status = 'WITHDRAWN' then '탈퇴한 사용자'
                             else coalesce(u.name, '알 수 없는 사용자') end as reporter_name
                 from reports r
