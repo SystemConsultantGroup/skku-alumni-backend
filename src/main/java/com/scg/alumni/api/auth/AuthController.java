@@ -53,6 +53,7 @@ public class AuthController {
         if (!passwordEncoder.matches(request.password(), credential.password())) {
             throw unauthorized();
         }
+        requireLoginableStatus(credential.status());
 
         AuthenticatedPrincipal principal = new AuthenticatedPrincipal(credential.id(), AuthScope.MEMBER, credential.name());
         return issueAuthResponse(principal, httpRequest, httpResponse);
@@ -189,9 +190,9 @@ public class AuthController {
 
     private MemberCredential findMemberCredential(String identifier) {
         return jdbcTemplate.query("""
-                        select id, name, password
+                        select id, name, password, status
                         from users
-                        where status = 'ACTIVE'
+                        where deleted_at is null
                           and password is not null
                           and password <> ''
                           and (student_id = ? or kingo_id = ? or email = ?)
@@ -201,7 +202,8 @@ public class AuthController {
                 (resultSet, rowNum) -> new MemberCredential(
                         resultSet.getLong("id"),
                         resultSet.getString("name"),
-                        resultSet.getString("password")
+                        resultSet.getString("password"),
+                        resultSet.getString("status")
                 ),
                 identifier, identifier, identifier)
                 .stream()
@@ -369,6 +371,26 @@ public class AuthController {
         return null;
     }
 
+    /**
+     * 비밀번호가 맞는데도 못 들어가는 경우에는 그 이유를 알려준다.
+     *
+     * <p>승인 대기 중인 사람에게 "아이디 또는 비밀번호를 확인해주세요" 만 돌려주면
+     * 방금 계정을 만든 본인은 비밀번호를 잘못 적은 줄 알고 계속 다시 넣는다.
+     * 비밀번호가 맞았을 때만 알려주므로 계정 존재 여부가 새어 나가지는 않는다.
+     */
+    private void requireLoginableStatus(String status) {
+        if ("ACTIVE".equals(status)) {
+            return;
+        }
+        String message = switch (status == null ? "" : status) {
+            case "PENDING" -> "가입 승인 대기 중입니다. 회비 납부가 확인되면 관리자가 계정을 활성화합니다.";
+            case "REJECTED" -> "가입이 반려된 계정입니다. 총동창회 사무처(02-741-4171)로 문의해주세요.";
+            case "WITHDRAWN" -> "탈퇴 처리된 계정입니다. 다시 이용하시려면 임원 등록을 새로 신청해주세요.";
+            default -> "현재 로그인할 수 없는 계정입니다. 총동창회 사무처(02-741-4171)로 문의해주세요.";
+        };
+        throw new ResponseStatusException(HttpStatus.FORBIDDEN, message);
+    }
+
     private ResponseStatusException unauthorized() {
         return new ResponseStatusException(HttpStatus.UNAUTHORIZED, "아이디 또는 비밀번호를 확인해주세요.");
     }
@@ -413,7 +435,8 @@ public class AuthController {
     private record MemberCredential(
             Long id,
             String name,
-            String password
+            String password,
+            String status
     ) {
     }
 

@@ -311,14 +311,19 @@ public class AdminMemberExcelController {
                 String companyName = value(row, 6, formatter);
                 Long companyId = StringUtils.hasText(companyName) ? findOrCreateCompany(companyName.trim()) : null;
                 String phone = normalizePhone(nullable(row, 4, formatter));
+                String email = nullable(row, 5, formatter);
+                String jobTitle = nullable(row, 7, formatter);
+
                 // 기존 회원을 다시 부어도 이미 승인된 상태를 되돌리지 않는다.
-                int count = jdbcTemplate.update("""
-                        update users set name = ?, major_id = ?, admission_year = ?, phone = ?, email = ?,
-                            company_id = ?, job_title = ?, updated_at = CURRENT_TIMESTAMP
-                        where student_id = ?
-                        """, name, majorId, admissionYear, phone, nullable(row, 5, formatter),
-                        companyId, nullable(row, 7, formatter), studentId);
-                if (count > 0) {
+                MemberColumns columns = new MemberColumns()
+                        .set("name", name)
+                        .set("major_id", majorId)
+                        .set("admission_year", admissionYear)
+                        .setIfPresent("phone", phone)
+                        .setIfPresent("email", email)
+                        .setIfPresent("company_id", companyId)
+                        .setIfPresent("job_title", jobTitle);
+                if (columns.update(jdbcTemplate, studentId) > 0) {
                     updated++;
                 } else {
                     jdbcTemplate.update("""
@@ -326,7 +331,7 @@ public class AdminMemberExcelController {
                                 phone, email, company_id, job_title, status, created_at, updated_at)
                             values (?, ?, ?, 'UNDERGRADUATE', 'BACHELOR', ?, ?, ?, ?, ?, ?, 'PENDING', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                             """, studentId, name, temporaryPassword, majorId, admissionYear, phone,
-                            nullable(row, 5, formatter), companyId, nullable(row, 7, formatter));
+                            email, companyId, jobTitle);
                     created++;
                 }
             }
@@ -336,6 +341,44 @@ public class AdminMemberExcelController {
             throw badRequest("엑셀 파일을 읽을 수 없습니다. .xlsx 형식과 입력값을 확인해주세요.");
         }
         return Map.of("created", created, "updated", updated, "total", created + updated);
+    }
+
+    /**
+     * 갱신할 칸만 모아 update 문을 만든다.
+     *
+     * <p>빈 칸을 그대로 덮어쓰면 안 된다. 사무처가 이름과 학과만 정리한 명단을
+     * 다시 부었을 때, 비워둔 전화번호·이메일 칸 때문에 앱에서 회원이 직접 채워
+     * 넣은 연락처가 통째로 날아간다. 값이 적힌 칸만 건드린다.
+     *
+     * <p>엑셀로 값을 지울 방법은 없어진다. 지우는 일은 회원 상세 화면에서 한다 —
+     * 무엇을 지우는지 보면서 하는 편이 맞다.
+     */
+    private static final class MemberColumns {
+
+        private final List<String> assignments = new java.util.ArrayList<>();
+        private final List<Object> parameters = new java.util.ArrayList<>();
+
+        MemberColumns set(String column, Object value) {
+            assignments.add(column + " = ?");
+            parameters.add(value);
+            return this;
+        }
+
+        MemberColumns setIfPresent(String column, Object value) {
+            if (value == null || (value instanceof String text && !StringUtils.hasText(text))) {
+                return this;
+            }
+            return set(column, value);
+        }
+
+        int update(JdbcTemplate jdbcTemplate, String studentId) {
+            List<Object> arguments = new java.util.ArrayList<>(parameters);
+            arguments.add(studentId);
+            return jdbcTemplate.update(
+                    "update users set " + String.join(", ", assignments)
+                            + ", updated_at = CURRENT_TIMESTAMP where student_id = ?",
+                    arguments.toArray());
+        }
     }
 
     private Long findOrCreateCompany(String name) {
