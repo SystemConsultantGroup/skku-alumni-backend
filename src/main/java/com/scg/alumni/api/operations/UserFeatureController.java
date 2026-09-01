@@ -467,7 +467,16 @@ public class UserFeatureController {
                                 then '차단한 사용자' else u.name end as president_name,
                            case when manager_block.blocked_id is not null
                                 then '차단한 사용자' else manager.name end as secretary_name,
-                           count(case when blocked.blocked_id is null then cm.id end) as member_count
+                           count(case when blocked.blocked_id is null then cm.id end) as member_count,
+                           (select count(*)
+                              from posts p
+                             where p.club_id = c.id
+                               and p.deleted_at is null
+                               and p.status = 'PUBLISHED'
+                               and not exists (select 1 from user_blocks pb
+                                                where pb.deleted_at is null
+                                                  and pb.blocker_id = ?
+                                                  and pb.blocked_id = p.user_id)) as post_count
                     from clubs c
                     left join users u on u.id = c.president_user_id and u.deleted_at is null
                     left join users manager on manager.id = coalesce(
@@ -487,7 +496,7 @@ public class UserFeatureController {
                     where c.category = ?
                     group by c.id, c.name, c.description, c.category, u.name, manager.name, manager_block.blocked_id
                     order by c.id desc
-                    """, JdbcResponseMapper.INSTANCE, currentUserId, currentUserId, currentUserId,
+                    """, JdbcResponseMapper.INSTANCE, currentUserId, currentUserId, currentUserId, currentUserId,
                     category.toUpperCase(Locale.ROOT));
         }
 
@@ -497,7 +506,16 @@ public class UserFeatureController {
                             then '차단한 사용자' else u.name end as president_name,
                        case when manager_block.blocked_id is not null
                             then '차단한 사용자' else manager.name end as secretary_name,
-                       count(case when blocked.blocked_id is null then cm.id end) as member_count
+                       count(case when blocked.blocked_id is null then cm.id end) as member_count,
+                       (select count(*)
+                          from posts p
+                         where p.club_id = c.id
+                           and p.deleted_at is null
+                           and p.status = 'PUBLISHED'
+                           and not exists (select 1 from user_blocks pb
+                                            where pb.deleted_at is null
+                                              and pb.blocker_id = ?
+                                              and pb.blocked_id = p.user_id)) as post_count
                 from clubs c
                 left join users u on u.id = c.president_user_id and u.deleted_at is null
                 left join users manager on manager.id = coalesce(
@@ -516,7 +534,7 @@ public class UserFeatureController {
                 left join user_blocks blocked on blocked.deleted_at is null and blocked.blocker_id = ? and blocked.blocked_id = cm.user_id
                 group by c.id, c.name, c.description, c.category, u.name, manager.name, manager_block.blocked_id
                 order by c.id desc
-                """, JdbcResponseMapper.INSTANCE, currentUserId, currentUserId, currentUserId);
+                """, JdbcResponseMapper.INSTANCE, currentUserId, currentUserId, currentUserId, currentUserId);
     }
 
     @PostMapping("/clubs")
