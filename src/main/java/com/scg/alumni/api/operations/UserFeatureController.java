@@ -956,10 +956,12 @@ public class UserFeatureController {
     public List<Map<String, Object>> findBlockedUsers() {
         Long currentUserId = AuthContext.currentMemberId();
         return jdbcTemplate.query("""
-                select ub.id, ub.blocked_id, u.name, u.phone, m.name as major_name, ub.created_at
+                select ub.id, ub.blocked_id, u.name,
+                       case when u.phone_public then u.phone else null end as phone,
+                       m.name as major_name, ub.created_at
                 from user_blocks ub
                 join users u on u.id = ub.blocked_id and u.deleted_at is null
-                join majors m on m.id = u.major_id
+                left join majors m on m.id = u.major_id
                 where ub.blocker_id = ?
                 order by ub.id desc
                 """, JdbcResponseMapper.INSTANCE, currentUserId);
