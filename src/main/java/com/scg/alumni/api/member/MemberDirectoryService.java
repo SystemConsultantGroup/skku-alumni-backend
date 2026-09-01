@@ -47,7 +47,7 @@ public class MemberDirectoryService {
         int pageSize = normalizeSize(size);
         Long currentUserId = AuthContext.currentMemberIdOrNull();
         List<Long> blockedMemberIds = currentUserId == null ? List.of(-1L) : jdbcTemplate.queryForList(
-                "select blocked_id from user_blocks where blocker_id = ?", Long.class, currentUserId);
+                "select blocked_id from user_blocks where blocker_id = ? and deleted_at is null", Long.class, currentUserId);
         if (blockedMemberIds.isEmpty()) {
             blockedMemberIds = List.of(-1L);
         }

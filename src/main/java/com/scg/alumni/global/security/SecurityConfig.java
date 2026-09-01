@@ -50,6 +50,10 @@ public class SecurityConfig {
                         .hasRole(AuthScope.MEMBER.name())
                         .requestMatchers("/api/v1/post-images", "/api/v1/post-images/**")
                         .hasAnyRole(AuthScope.MEMBER.name(), AuthScope.ADMIN.name())
+                        // 사진 보기는 사무처도 해야 한다. 회원 상세에서 얼굴을 확인하고
+                        // 바꾸는데, 회원 권한으로만 열리면 관리 화면에서는 깨진 이미지만 보인다.
+                        .requestMatchers(HttpMethod.GET, "/api/v1/profile-images/**")
+                        .hasAnyRole(AuthScope.MEMBER.name(), AuthScope.ADMIN.name())
                         .requestMatchers("/api/v1/profile-images", "/api/v1/profile-images/**")
                         .hasRole(AuthScope.MEMBER.name())
                         .requestMatchers(HttpMethod.GET,

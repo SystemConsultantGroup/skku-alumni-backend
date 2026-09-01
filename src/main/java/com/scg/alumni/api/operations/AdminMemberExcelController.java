@@ -157,8 +157,9 @@ public class AdminMemberExcelController {
                        co.name as company_name, u.job_title, u.status, u.profile_image_url
                 from users u
                 join majors m on m.id = u.major_id
-                left join companies co on co.id = u.company_id
-                where (? is null or lower(u.name) like ? or lower(m.name) like ? or lower(coalesce(co.name, '')) like ?)
+                left join companies co on co.id = u.company_id and co.deleted_at is null
+                where u.deleted_at is null
+                  and (? is null or lower(u.name) like ? or lower(m.name) like ? or lower(coalesce(co.name, '')) like ?)
                   and (? is null or u.status = ?)
                 order by u.id
                 """, like, like, like, like, status, status);
@@ -212,8 +213,9 @@ public class AdminMemberExcelController {
                 select u.student_id, u.name, u.profile_image_url
                 from users u
                 join majors m on m.id = u.major_id
-                left join companies co on co.id = u.company_id
-                where u.profile_image_url is not null
+                left join companies co on co.id = u.company_id and co.deleted_at is null
+                where u.deleted_at is null
+                  and u.profile_image_url is not null
                   and (? is null or lower(u.name) like ? or lower(m.name) like ? or lower(coalesce(co.name, '')) like ?)
                   and (? is null or u.status = ?)
                 order by u.id
@@ -337,7 +339,7 @@ public class AdminMemberExcelController {
     }
 
     private Long findOrCreateCompany(String name) {
-        Long existing = jdbcTemplate.query("select id from companies where lower(replace(name, ' ', '')) = lower(replace(?, ' ', '')) limit 1",
+        Long existing = jdbcTemplate.query("select id from companies where deleted_at is null and lower(replace(name, ' ', '')) = lower(replace(?, ' ', '')) limit 1",
                 resultSet -> resultSet.next() ? resultSet.getLong(1) : null, name);
         if (existing != null) return existing;
         KeyHolder keyHolder = new GeneratedKeyHolder();
