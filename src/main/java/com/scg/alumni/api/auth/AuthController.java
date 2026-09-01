@@ -236,14 +236,13 @@ public class AuthController {
                         select u.id, u.name, u.phone, u.email, u.status, u.kingo_id, u.password
                         from users u
                         join majors m on m.id = u.major_id
-                        left join majors dm on dm.id = m.display_major_id
                         where u.name = ?
                           and u.admission_year = ?
-                          and (
-                              lower(replace(m.name, ' ', '')) = ?
-                              or lower(replace(m.normalized_name, ' ', '')) = ?
-                              or lower(replace(coalesce(dm.name, ''), ' ', '')) = ?
-                              or lower(replace(coalesce(dm.normalized_name, ''), ' ', '')) = ?
+                          and coalesce(m.display_major_id, m.id) in (
+                              select coalesce(s.display_major_id, s.id)
+                              from majors s
+                              where lower(replace(s.name, ' ', '')) = ?
+                                 or lower(replace(s.normalized_name, ' ', '')) = ?
                           )
                           and replace(replace(replace(coalesce(u.phone, ''), '-', ''), ' ', ''), '.', '') = ?
                           and exists (
@@ -266,7 +265,6 @@ public class AuthController {
                         resultSet.getString("password")
                 ),
                 request.name().trim(), request.admissionYear(),
-                normalizeText(request.majorName()), normalizeText(request.majorName()),
                 normalizeText(request.majorName()), normalizeText(request.majorName()),
                 normalizePhone(request.phone()))
                 .stream()
