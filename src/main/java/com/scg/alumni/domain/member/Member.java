@@ -110,6 +110,9 @@ public class Member extends BaseTimeEntity {
     @Column(columnDefinition = "text")
     private String prText;
 
+    /** 관리자가 지운 회원. 본인 탈퇴(status = WITHDRAWN)와 달리 데이터를 남겨둔다. */
+    private java.time.LocalDateTime deletedAt;
+
     @OneToMany(mappedBy = "member")
     private Set<MemberHobby> hobbies = new LinkedHashSet<>();
 
@@ -122,6 +125,7 @@ public class Member extends BaseTimeEntity {
      */
     public Optional<OfficerHistory> currentPaidOfficerHistory() {
         return officerHistories.stream()
+                .filter(history -> history.getDeletedAt() == null)
                 .filter(OfficerHistory::isCurrentPaid)
                 .max(java.util.Comparator.comparing(history -> history.getOfficerTerm().getStartedAt()));
     }

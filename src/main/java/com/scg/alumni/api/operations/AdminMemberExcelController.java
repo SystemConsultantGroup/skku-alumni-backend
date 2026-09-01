@@ -13,9 +13,12 @@ import io.minio.GetObjectArgs;
 import io.minio.MinioClient;
 import java.io.InputStream;
 import org.apache.poi.ss.usermodel.Cell;
+import org.apache.poi.ss.usermodel.CellStyle;
 import org.apache.poi.ss.usermodel.ClientAnchor;
 import org.apache.poi.ss.usermodel.Drawing;
 import org.apache.poi.ss.usermodel.DataFormatter;
+import org.apache.poi.ss.usermodel.Font;
+import org.apache.poi.ss.usermodel.IndexedColors;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
@@ -52,8 +55,11 @@ public class AdminMemberExcelController {
 
     /** 목록 다운로드. 사무처가 보는 자료라 상태를 포함한다. */
     private static final List<String> DOWNLOAD_HEADERS = List.of("학번", "이름", "학과", "입학연도", "전화번호", "이메일", "회사명", "직위", "상태");
-    private static final Set<String> STATUSES = Set.of("PENDING", "ACTIVE", "REJECTED");
+    private static final Set<String> STATUSES = Set.of("PENDING", "ACTIVE", "REJECTED", "WITHDRAWN");
     private static final int MAX_ROWS = 5_000;
+
+    /** 양식의 예시 행 표식. 학번이 이걸로 시작하면 업로드에서 건너뛰므로, 안 지우고 올려도 회원이 만들어지지 않는다. */
+    private static final String EXAMPLE_ROW_MARKER = "예시";
 
     /** 엑셀에 넣는 사진 칸 크기. 증명사진 비율(3:4)에 맞춘다. */
     private static final int PHOTO_COLUMN_WIDTH = 14 * 256;
@@ -67,6 +73,8 @@ public class AdminMemberExcelController {
     @GetMapping("/template")
     public ResponseEntity<byte[]> downloadTemplate() throws IOException {
         try (XSSFWorkbook workbook = new XSSFWorkbook(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            List<String> majorNames = jdbcTemplate.queryForList("select name from majors where status = 'ACTIVE' order by name", String.class);
+
             Sheet form = workbook.createSheet("회원 업로드 양식");
             Row header = form.createRow(0);
             for (int index = 0; index < UPLOAD_HEADERS.size(); index++) {
@@ -77,19 +85,43 @@ public class AdminMemberExcelController {
                     default -> 24 * 256;
                 });
             }
+            // 학번·전화번호를 숫자 셀로 두면 엑셀이 앞자리 0을 지우거나 지수 표기로 바꾼다. 열 자체를 텍스트로 고정한다.
+            CellStyle textStyle = workbook.createCellStyle();
+            textStyle.setDataFormat(workbook.createDataFormat().getFormat("@"));
+            form.setDefaultColumnStyle(0, textStyle);
+            form.setDefaultColumnStyle(4, textStyle);
+
+            Font exampleFont = workbook.createFont();
+            exampleFont.setItalic(true);
+            exampleFont.setColor(IndexedColors.GREY_50_PERCENT.getIndex());
+            CellStyle exampleStyle = workbook.createCellStyle();
+            exampleStyle.setFont(exampleFont);
+            exampleStyle.setDataFormat(workbook.createDataFormat().getFormat("@"));
+            String[] exampleValues = {EXAMPLE_ROW_MARKER + ") 2020123456", "김성균", majorNames.isEmpty() ? "산업공학과" : majorNames.get(0),
+                    "2020", "010-1234-5678", "kim@example.com", "성균관대학교", "책임연구원"};
+            Row exampleRow = form.createRow(1);
+            for (int index = 0; index < exampleValues.length; index++) {
+                Cell cell = exampleRow.createCell(index);
+                cell.setCellValue(exampleValues[index]);
+                cell.setCellStyle(exampleStyle);
+            }
             form.createFreezePane(0, 1);
 
             Sheet guide = workbook.createSheet("작성 안내");
             String[][] guideRows = {
                     {"항목", "작성 방법"},
-                    {"학번", "필수 · 중복 기준 · 기존 학번이면 회원 정보를 수정합니다."},
+                    {"예시 행", "첫 시트의 2행은 작성 예시입니다. 지우고 써도 되고, 그대로 두어도 업로드할 때 자동으로 건너뜁니다."},
+                    {"컬럼", "첫 행의 컬럼명과 순서는 바꾸거나 지우면 안 됩니다."},
+                    {"학번", "필수 · 중복 기준 · 기존 학번이면 그 회원의 정보를 수정합니다. (예: 2020123456)"},
                     {"이름", "필수"},
-                    {"학과", "필수 · '학과 목록' 시트에 있는 명칭을 정확히 입력합니다."},
-                    {"입학연도", "필수 · 1900~2100 사이의 4자리 숫자"},
-                    {"전화번호", "선택"},
-                    {"이메일", "선택"},
+                    {"학과", "필수 · '학과 목록' 시트에 있는 명칭을 그대로 입력합니다. 목록에 없는 학과를 쓰면 해당 행 번호와 함께 오류가 납니다."},
+                    {"입학연도", "필수 · 1900~2100 사이의 4자리 숫자 (예: 2020)"},
+                    {"전화번호", "선택 · 010-1234-5678 형식을 권장하며, 하이픈 없이 숫자만 적어도 됩니다."},
+                    {"이메일", "선택 · 이메일 주소 형식 (예: kim@example.com)"},
                     {"회사명", "선택 · 없는 회사명은 새로 등록됩니다."},
-                    {"직위", "선택"},
+                    {"직위", "선택 · 회사에서의 직위입니다. (예: 부장, 대표) 동창회 임원 직책을 적는 칸이 아닙니다."},
+                    {"임원 직책", "회장·부회장·상임이사·이사 같은 임원 직책과 기수는 엑셀로 올리지 않습니다. 임원 신청을 승인할 때 지정됩니다."},
+                    {"사진", "사진은 엑셀에 넣지 않습니다. 파일명을 학번 또는 이름으로 저장한 사진들을 zip으로 묶어 '사진 일괄 등록'으로 올립니다. (예: 2020123456.jpg)"},
                     {"제한", "첫 번째 시트 기준 최대 5,000명, 파일 크기 10MB 이하"},
                     {"참고", "업로드한 회원은 모두 가입 대기 상태로 들어옵니다. 승인은 회원 관리에서 합니다."}
             };
@@ -104,7 +136,6 @@ public class AdminMemberExcelController {
 
             Sheet majors = workbook.createSheet("학과 목록");
             majors.createRow(0).createCell(0).setCellValue("사용 가능한 학과명");
-            List<String> majorNames = jdbcTemplate.queryForList("select name from majors where status = 'ACTIVE' order by name", String.class);
             for (int index = 0; index < majorNames.size(); index++) majors.createRow(index + 1).createCell(0).setCellValue(majorNames.get(index));
             majors.setColumnWidth(0, 36 * 256);
             majors.createFreezePane(0, 1);
@@ -126,8 +157,9 @@ public class AdminMemberExcelController {
                        co.name as company_name, u.job_title, u.status, u.profile_image_url
                 from users u
                 join majors m on m.id = u.major_id
-                left join companies co on co.id = u.company_id
-                where (? is null or lower(u.name) like ? or lower(m.name) like ? or lower(coalesce(co.name, '')) like ?)
+                left join companies co on co.id = u.company_id and co.deleted_at is null
+                where u.deleted_at is null
+                  and (? is null or lower(u.name) like ? or lower(m.name) like ? or lower(coalesce(co.name, '')) like ?)
                   and (? is null or u.status = ?)
                 order by u.id
                 """, like, like, like, like, status, status);
@@ -181,8 +213,9 @@ public class AdminMemberExcelController {
                 select u.student_id, u.name, u.profile_image_url
                 from users u
                 join majors m on m.id = u.major_id
-                left join companies co on co.id = u.company_id
-                where u.profile_image_url is not null
+                left join companies co on co.id = u.company_id and co.deleted_at is null
+                where u.deleted_at is null
+                  and u.profile_image_url is not null
                   and (? is null or lower(u.name) like ? or lower(m.name) like ? or lower(coalesce(co.name, '')) like ?)
                   and (? is null or u.status = ?)
                 order by u.id
@@ -266,6 +299,7 @@ public class AdminMemberExcelController {
             for (int index = 1; index <= sheet.getLastRowNum(); index++) {
                 Row row = sheet.getRow(index);
                 if (row == null || isBlank(row, formatter)) continue;
+                if (value(row, 0, formatter).startsWith(EXAMPLE_ROW_MARKER)) continue;
                 int excelRow = index + 1;
                 String studentId = required(row, 0, "학번", excelRow, formatter);
                 String name = required(row, 1, "이름", excelRow, formatter);
@@ -276,12 +310,13 @@ public class AdminMemberExcelController {
                 if (majorId == null) throw badRequest(excelRow + "행: 등록되지 않은 학과입니다. (" + majorName + ")");
                 String companyName = value(row, 6, formatter);
                 Long companyId = StringUtils.hasText(companyName) ? findOrCreateCompany(companyName.trim()) : null;
+                String phone = normalizePhone(nullable(row, 4, formatter));
                 // 기존 회원을 다시 부어도 이미 승인된 상태를 되돌리지 않는다.
                 int count = jdbcTemplate.update("""
                         update users set name = ?, major_id = ?, admission_year = ?, phone = ?, email = ?,
                             company_id = ?, job_title = ?, updated_at = CURRENT_TIMESTAMP
                         where student_id = ?
-                        """, name, majorId, admissionYear, nullable(row, 4, formatter), nullable(row, 5, formatter),
+                        """, name, majorId, admissionYear, phone, nullable(row, 5, formatter),
                         companyId, nullable(row, 7, formatter), studentId);
                 if (count > 0) {
                     updated++;
@@ -290,7 +325,7 @@ public class AdminMemberExcelController {
                             insert into users (student_id, name, password, category, degree, major_id, admission_year,
                                 phone, email, company_id, job_title, status, created_at, updated_at)
                             values (?, ?, ?, 'UNDERGRADUATE', 'BACHELOR', ?, ?, ?, ?, ?, ?, 'PENDING', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                            """, studentId, name, temporaryPassword, majorId, admissionYear, nullable(row, 4, formatter),
+                            """, studentId, name, temporaryPassword, majorId, admissionYear, phone,
                             nullable(row, 5, formatter), companyId, nullable(row, 7, formatter));
                     created++;
                 }
@@ -304,7 +339,7 @@ public class AdminMemberExcelController {
     }
 
     private Long findOrCreateCompany(String name) {
-        Long existing = jdbcTemplate.query("select id from companies where lower(replace(name, ' ', '')) = lower(replace(?, ' ', '')) limit 1",
+        Long existing = jdbcTemplate.query("select id from companies where deleted_at is null and lower(replace(name, ' ', '')) = lower(replace(?, ' ', '')) limit 1",
                 resultSet -> resultSet.next() ? resultSet.getLong(1) : null, name);
         if (existing != null) return existing;
         KeyHolder keyHolder = new GeneratedKeyHolder();
@@ -345,6 +380,12 @@ public class AdminMemberExcelController {
     private String required(Row row, int cell, String label, int rowNumber, DataFormatter formatter) {
         String value = value(row, cell, formatter);
         if (!StringUtils.hasText(value)) throw badRequest(rowNumber + "행: " + label + "은(는) 필수입니다.");
+        return value;
+    }
+
+    /** 엑셀이 숫자 셀의 앞자리 0을 지운 전화번호를 되살린다. (1012345678 → 01012345678) */
+    private String normalizePhone(String value) {
+        if (value != null && value.matches("1[0-9]{8,9}")) return "0" + value;
         return value;
     }
 

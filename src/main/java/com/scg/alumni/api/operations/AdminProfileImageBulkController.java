@@ -119,13 +119,13 @@ public class AdminProfileImageBulkController {
     /** 학번이 먼저다. 학번으로 못 찾으면 이름으로 찾되, 동명이인은 붙이지 않는다. */
     private List<Long> findMemberIds(String key) {
         List<Long> byStudentId = jdbcTemplate.query(
-                "select id from users where student_id = ? and status <> 'WITHDRAWN'",
+                "select id from users where student_id = ? and deleted_at is null and status <> 'WITHDRAWN'",
                 (resultSet, rowNum) -> resultSet.getLong(1), key);
         if (!byStudentId.isEmpty()) {
             return byStudentId;
         }
         return jdbcTemplate.query(
-                "select id from users where replace(name, ' ', '') = replace(?, ' ', '') and status <> 'WITHDRAWN'",
+                "select id from users where replace(name, ' ', '') = replace(?, ' ', '') and deleted_at is null and status <> 'WITHDRAWN'",
                 (resultSet, rowNum) -> resultSet.getLong(1), key);
     }
 

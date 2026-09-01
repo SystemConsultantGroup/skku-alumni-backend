@@ -36,6 +36,7 @@ public record MemberSummaryResponse(
                 currentHistory == null ? null : currentHistory.getOfficerRole().getName(),
                 currentHistory == null ? null : currentHistory.getOfficerTerm().getDisplayName(),
                 member.getHobbies().stream()
+                        .filter(memberHobby -> memberHobby.getDeletedAt() == null)
                         .map(MemberHobby::getHobby)
                         .map(Hobby::getName)
                         .sorted()

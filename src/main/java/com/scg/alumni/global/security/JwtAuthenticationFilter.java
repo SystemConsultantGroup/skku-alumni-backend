@@ -42,12 +42,27 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             return java.util.Optional.empty();
         }
 
-        String accessCookieName = request.getRequestURI().startsWith("/api/v1/admin/")
-                || request.getRequestURI().startsWith("/api/v1/auth/admin/")
+        boolean adminPath = request.getRequestURI().startsWith("/api/v1/admin/")
+                || request.getRequestURI().startsWith("/api/v1/auth/admin/");
+        String preferred = adminPath
                 ? authProperties.getAdminAccessCookieName()
                 : authProperties.getMemberAccessCookieName();
+        String fallback = adminPath
+                ? authProperties.getMemberAccessCookieName()
+                : authProperties.getAdminAccessCookieName();
+
+        // 두 자리를 함께 쓰는 주소가 있다. 프로필 사진과 글 이미지는 회원도 사무처도
+        // 본다. 주소만 보고 회원 쿠키를 고르면 사무처 브라우저에는 아무 쿠키도 잡히지
+        // 않아 깨진 이미지만 남는다. 없으면 다른 쪽 쿠키로 넘어간다.
+        //
+        // 넘어가도 위험하지 않다. 어디까지 허용할지는 SecurityConfig 가 권한으로
+        // 정한다 — 회원 쿠키로 /api/v1/admin/** 에 들어가면 그대로 막힌다.
+        return findCookie(cookies, preferred).or(() -> findCookie(cookies, fallback));
+    }
+
+    private java.util.Optional<String> findCookie(Cookie[] cookies, String name) {
         for (Cookie cookie : cookies) {
-            if (accessCookieName.equals(cookie.getName())) {
+            if (name.equals(cookie.getName())) {
                 return java.util.Optional.ofNullable(cookie.getValue());
             }
         }

@@ -35,4 +35,7 @@ public class MemberHobby extends BaseTimeEntity {
     @ManyToOne(fetch = LAZY)
     @JoinColumn(name = "hobby_id", nullable = false)
     private Hobby hobby;
+
+    /** 관리자가 지운 취미 연결. 값이 있으면 조회에서 제외한다. */
+    private java.time.LocalDateTime deletedAt;
 }

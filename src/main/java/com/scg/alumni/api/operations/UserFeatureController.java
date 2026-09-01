@@ -61,13 +61,14 @@ public class UserFeatureController {
                        orole.name as officer_role_name
                 from users u
                 join majors m on m.id = u.major_id
-                left join companies co on co.id = u.company_id
+                left join companies co on co.id = u.company_id and co.deleted_at is null
                 left join industries i on i.id = u.industry_id
                 left join officer_histories oh on oh.id = (
                     select recent.id
                     from officer_histories recent
                     join officer_terms recent_term on recent_term.id = recent.officer_term_id
                     where recent.user_id = u.id
+                      and recent.deleted_at is null
                       and recent_term.started_at <= CURRENT_DATE
                       and recent_term.ended_at >= DATE_SUB(CURRENT_DATE, INTERVAL ? DAY)
                     order by recent_term.started_at desc
@@ -82,10 +83,12 @@ public class UserFeatureController {
                 from user_hobbies uh
                 join hobbies h on h.id = uh.hobby_id
                 where uh.user_id = ?
+                  and uh.deleted_at is null
+                  and h.deleted_at is null
                 order by h.name
                 """, JdbcResponseMapper.INSTANCE, currentUserId));
         profile.put("webLinks", jdbcTemplate.queryForList("""
-                select url from user_web_links where user_id = ? order by id
+                select url from user_web_links where user_id = ? and deleted_at is null order by id
                 """, String.class, currentUserId));
         return profile;
     }
@@ -244,16 +247,16 @@ public class UserFeatureController {
                        ot.phase as officer_phase, orole.name as officer_role_name
                 from users u
                 join majors m on m.id = u.major_id
-                join officer_histories oh on oh.user_id = u.id
+                join officer_histories oh on oh.user_id = u.id and oh.deleted_at is null
                 join officer_terms ot on ot.id = oh.officer_term_id
                     and ot.started_at <= CURRENT_DATE
                     and ot.ended_at >= DATE_SUB(CURRENT_DATE, INTERVAL ? DAY)
                 join officer_roles orole on orole.id = oh.officer_role_id
-                left join companies co on co.id = u.company_id
+                left join companies co on co.id = u.company_id and co.deleted_at is null
                 left join industries i on i.id = u.industry_id
-                where u.id = ? and u.status = 'ACTIVE' and oh.payment_status = 'PAID'
+                where u.id = ? and u.status = 'ACTIVE' and u.deleted_at is null and oh.payment_status = 'PAID'
                   and not exists (
-                      select 1 from user_blocks ub where ub.blocker_id = ? and ub.blocked_id = u.id
+                      select 1 from user_blocks ub where ub.deleted_at is null and ub.blocker_id = ? and ub.blocked_id = u.id
                   )
                 order by ot.started_at desc
                 """, JdbcResponseMapper.INSTANCE, OfficerTerm.GRACE_DAYS, memberId, AuthContext.currentMemberId()).stream()
@@ -261,10 +264,10 @@ public class UserFeatureController {
                 .orElseThrow(() -> new IllegalArgumentException("임원 정보를 찾을 수 없습니다."));
         member.put("hobbies", jdbcTemplate.queryForList("""
                 select h.name from user_hobbies uh join hobbies h on h.id = uh.hobby_id
-                where uh.user_id = ? order by h.name
+                where uh.user_id = ? and uh.deleted_at is null and h.deleted_at is null order by h.name
                 """, String.class, memberId));
         member.put("webLinks", jdbcTemplate.queryForList("""
-                select url from user_web_links where user_id = ? order by id
+                select url from user_web_links where user_id = ? and deleted_at is null order by id
                 """, String.class, memberId));
         return member;
     }
@@ -274,21 +277,49 @@ public class UserFeatureController {
     public Map<String, Object> createCompany(@Valid @RequestBody CompanyCreateRequest request) {
         String name = request.name().trim().replaceAll("\\s+", " ");
         Integer duplicateCount = jdbcTemplate.queryForObject(
-                "select count(*) from companies where lower(replace(name, ' ', '')) = lower(replace(?, ' ', ''))",
+                "select count(*) from companies where deleted_at is null and lower(replace(name, ' ', '')) = lower(replace(?, ' ', ''))",
                 Integer.class, name);
         if (duplicateCount != null && duplicateCount > 0) {
             throw new IllegalArgumentException("이미 등록된 회사명입니다.");
         }
-        jdbcTemplate.update("""
-                insert into companies (name, created_at, updated_at)
-                values (?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                """, name);
-        Long id = jdbcTemplate.queryForObject("select last_insert_id()", Long.class);
+        // 지운 직장과 이름이 겹치면 유일 제약에 걸린다. 새로 만들지 말고 되살린다.
+        Long revivedId = reviveDeletedCompany(name);
+        if (revivedId == null) {
+            jdbcTemplate.update("""
+                    insert into companies (name, created_at, updated_at)
+                    values (?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """, name);
+        }
+        Long id = revivedId != null ? revivedId
+                : jdbcTemplate.queryForObject("select last_insert_id()", Long.class);
         return jdbcTemplate.queryForObject("""
                 select c.id, c.name, c.work_zipcode, c.work_address1, c.work_address2,
                        c.description, c.industry_id, i.name as industry_name
-                from companies c left join industries i on i.id = c.industry_id where c.id = ?
+                from companies c left join industries i on i.id = c.industry_id
+                where c.id = ? and c.deleted_at is null
                 """, JdbcResponseMapper.INSTANCE, id);
+    }
+
+    /** 이름이 같은 지운 직장이 있으면 되살려 그 id를 준다. 없으면 null. */
+    private Long reviveDeletedCompany(String name) {
+        Long deletedId = jdbcTemplate.query("""
+                select id from companies
+                where deleted_at is not null
+                  and lower(replace(name, ' ', '')) = lower(replace(?, ' ', ''))
+                order by id
+                limit 1
+                """, (resultSet, rowNum) -> resultSet.getLong(1), name)
+                .stream()
+                .findFirst()
+                .orElse(null);
+        if (deletedId == null) {
+            return null;
+        }
+        jdbcTemplate.update("""
+                update companies set name = ?, deleted_at = null, updated_at = CURRENT_TIMESTAMP
+                where id = ?
+                """, name, deletedId);
+        return deletedId;
     }
 
     @PostMapping("/hobbies")
@@ -297,20 +328,26 @@ public class UserFeatureController {
         String name = request.name().trim().replaceAll("\\s+", " ");
         Integer duplicateCount = jdbcTemplate.queryForObject("""
                 select count(*) from hobbies
-                where lower(replace(name, ' ', '')) = lower(replace(?, ' ', ''))
+                where deleted_at is null
+                  and lower(replace(name, ' ', '')) = lower(replace(?, ' ', ''))
                 """, Integer.class, name);
         if (duplicateCount != null && duplicateCount > 0) {
             throw new IllegalArgumentException("이미 등록된 취미입니다.");
         }
-        try {
-            jdbcTemplate.update("""
-                    insert into hobbies (name, created_at, updated_at)
-                    values (?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                    """, name);
-        } catch (DuplicateKeyException exception) {
-            throw new IllegalArgumentException("이미 등록된 취미입니다.");
+        // 지운 취미와 이름이 겹치면 유일 제약에 걸린다. 새로 만들지 말고 되살린다.
+        Long revivedId = reviveDeletedHobby(name);
+        if (revivedId == null) {
+            try {
+                jdbcTemplate.update("""
+                        insert into hobbies (name, created_at, updated_at)
+                        values (?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        """, name);
+            } catch (DuplicateKeyException exception) {
+                throw new IllegalArgumentException("이미 등록된 취미입니다.");
+            }
         }
-        Long id = jdbcTemplate.queryForObject("select last_insert_id()", Long.class);
+        Long id = revivedId != null ? revivedId
+                : jdbcTemplate.queryForObject("select last_insert_id()", Long.class);
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("id", id);
         response.put("name", name);
@@ -318,12 +355,34 @@ public class UserFeatureController {
         return response;
     }
 
+    /** 이름이 같은 지운 취미가 있으면 되살려 그 id를 준다. 없으면 null. */
+    private Long reviveDeletedHobby(String name) {
+        Long deletedId = jdbcTemplate.query("""
+                select id from hobbies
+                where deleted_at is not null
+                  and lower(replace(name, ' ', '')) = lower(replace(?, ' ', ''))
+                order by id
+                limit 1
+                """, (resultSet, rowNum) -> resultSet.getLong(1), name)
+                .stream()
+                .findFirst()
+                .orElse(null);
+        if (deletedId == null) {
+            return null;
+        }
+        jdbcTemplate.update("""
+                update hobbies set name = ?, deleted_at = null, updated_at = CURRENT_TIMESTAMP
+                where id = ?
+                """, name, deletedId);
+        return deletedId;
+    }
+
     private void replaceHobbies(Long userId, List<Long> hobbyIds) {
         List<Long> uniqueIds = hobbyIds == null ? List.of() : hobbyIds.stream().distinct().toList();
         if (!uniqueIds.isEmpty()) {
             String placeholders = String.join(",", java.util.Collections.nCopies(uniqueIds.size(), "?"));
             Integer count = jdbcTemplate.queryForObject(
-                    "select count(*) from hobbies where id in (" + placeholders + ")",
+                    "select count(*) from hobbies where deleted_at is null and id in (" + placeholders + ")",
                     Integer.class, uniqueIds.toArray());
             if (count == null || count != uniqueIds.size()) {
                 throw new IllegalArgumentException("존재하지 않는 취미가 포함되어 있습니다.");
@@ -386,8 +445,9 @@ public class UserFeatureController {
                 from payment_records pr
                 join officer_terms ot on ot.id = pr.officer_term_id
                 join officer_histories oh on oh.user_id = pr.user_id and oh.officer_term_id = pr.officer_term_id
+                    and oh.deleted_at is null
                 join officer_roles orole on orole.id = oh.officer_role_id
-                where pr.user_id = ?
+                where pr.user_id = ? and pr.deleted_at is null
                 order by ot.generation desc, ot.phase desc
                 """, JdbcResponseMapper.INSTANCE, currentUserId);
 
@@ -403,13 +463,13 @@ public class UserFeatureController {
         if (StringUtils.hasText(category)) {
             return jdbcTemplate.query("""
                     select c.id, c.name, c.description, c.category,
-                           case when exists (select 1 from user_blocks ub where ub.blocker_id = ? and ub.blocked_id = u.id)
+                           case when exists (select 1 from user_blocks ub where ub.deleted_at is null and ub.blocker_id = ? and ub.blocked_id = u.id)
                                 then '차단한 사용자' else u.name end as president_name,
                            case when manager_block.blocked_id is not null
                                 then '차단한 사용자' else manager.name end as secretary_name,
                            count(case when blocked.blocked_id is null then cm.id end) as member_count
                     from clubs c
-                    left join users u on u.id = c.president_user_id
+                    left join users u on u.id = c.president_user_id and u.deleted_at is null
                     left join users manager on manager.id = coalesce(
                            c.manager_user_id,
                            (
@@ -417,13 +477,13 @@ public class UserFeatureController {
                                from club_members legacy_manager
                                where legacy_manager.club_id = c.id
                                  and legacy_manager.club_role = 'MANAGER'
-                                 and legacy_manager.left_at is null
+                                 and legacy_manager.left_at is null and legacy_manager.deleted_at is null
                                  and legacy_manager.user_id <> c.president_user_id
                            )
-                    )
-                    left join user_blocks manager_block on manager_block.blocker_id = ? and manager_block.blocked_id = manager.id
-                    left join club_members cm on cm.club_id = c.id and cm.left_at is null
-                    left join user_blocks blocked on blocked.blocker_id = ? and blocked.blocked_id = cm.user_id
+                    ) and manager.deleted_at is null
+                    left join user_blocks manager_block on manager_block.deleted_at is null and manager_block.blocker_id = ? and manager_block.blocked_id = manager.id
+                    left join club_members cm on cm.club_id = c.id and cm.left_at is null and cm.deleted_at is null
+                    left join user_blocks blocked on blocked.deleted_at is null and blocked.blocker_id = ? and blocked.blocked_id = cm.user_id
                     where c.category = ?
                     group by c.id, c.name, c.description, c.category, u.name, manager.name, manager_block.blocked_id
                     order by c.id desc
@@ -433,13 +493,13 @@ public class UserFeatureController {
 
         return jdbcTemplate.query("""
                 select c.id, c.name, c.description, c.category,
-                       case when exists (select 1 from user_blocks ub where ub.blocker_id = ? and ub.blocked_id = u.id)
+                       case when exists (select 1 from user_blocks ub where ub.deleted_at is null and ub.blocker_id = ? and ub.blocked_id = u.id)
                             then '차단한 사용자' else u.name end as president_name,
                        case when manager_block.blocked_id is not null
                             then '차단한 사용자' else manager.name end as secretary_name,
                        count(case when blocked.blocked_id is null then cm.id end) as member_count
                 from clubs c
-                left join users u on u.id = c.president_user_id
+                left join users u on u.id = c.president_user_id and u.deleted_at is null
                 left join users manager on manager.id = coalesce(
                        c.manager_user_id,
                        (
@@ -447,13 +507,13 @@ public class UserFeatureController {
                            from club_members legacy_manager
                            where legacy_manager.club_id = c.id
                              and legacy_manager.club_role = 'MANAGER'
-                             and legacy_manager.left_at is null
+                             and legacy_manager.left_at is null and legacy_manager.deleted_at is null
                              and legacy_manager.user_id <> c.president_user_id
                        )
-                )
-                left join user_blocks manager_block on manager_block.blocker_id = ? and manager_block.blocked_id = manager.id
-                left join club_members cm on cm.club_id = c.id and cm.left_at is null
-                left join user_blocks blocked on blocked.blocker_id = ? and blocked.blocked_id = cm.user_id
+                ) and manager.deleted_at is null
+                left join user_blocks manager_block on manager_block.deleted_at is null and manager_block.blocker_id = ? and manager_block.blocked_id = manager.id
+                left join club_members cm on cm.club_id = c.id and cm.left_at is null and cm.deleted_at is null
+                left join user_blocks blocked on blocked.deleted_at is null and blocked.blocker_id = ? and blocked.blocked_id = cm.user_id
                 group by c.id, c.name, c.description, c.category, u.name, manager.name, manager_block.blocked_id
                 order by c.id desc
                 """, JdbcResponseMapper.INSTANCE, currentUserId, currentUserId, currentUserId);
@@ -501,10 +561,10 @@ public class UserFeatureController {
                        count(distinct case when member_block.blocked_id is null then cm.id end) as member_count,
                        count(distinct case when post_block.blocked_id is null then p.id end) as post_count
                 from clubs c
-                left join users president on president.id = c.president_user_id
-                left join user_blocks president_block on president_block.blocker_id = ? and president_block.blocked_id = president.id
-                left join club_members cm on cm.club_id = c.id and cm.left_at is null
-                left join user_blocks member_block on member_block.blocker_id = ? and member_block.blocked_id = cm.user_id
+                left join users president on president.id = c.president_user_id and president.deleted_at is null
+                left join user_blocks president_block on president_block.deleted_at is null and president_block.blocker_id = ? and president_block.blocked_id = president.id
+                left join club_members cm on cm.club_id = c.id and cm.left_at is null and cm.deleted_at is null
+                left join user_blocks member_block on member_block.deleted_at is null and member_block.blocker_id = ? and member_block.blocked_id = cm.user_id
                 left join users secretary on secretary.id = coalesce(
                        c.manager_user_id,
                        (
@@ -512,13 +572,13 @@ public class UserFeatureController {
                            from club_members legacy_manager
                            where legacy_manager.club_id = c.id
                              and legacy_manager.club_role = 'MANAGER'
-                             and legacy_manager.left_at is null
+                             and legacy_manager.left_at is null and legacy_manager.deleted_at is null
                              and legacy_manager.user_id <> c.president_user_id
                        )
-                )
-                left join user_blocks secretary_block on secretary_block.blocker_id = ? and secretary_block.blocked_id = secretary.id
-                left join posts p on p.club_id = c.id and p.post_kind = 'CLUB' and p.status = 'PUBLISHED'
-                left join user_blocks post_block on post_block.blocker_id = ? and post_block.blocked_id = p.user_id
+                ) and secretary.deleted_at is null
+                left join user_blocks secretary_block on secretary_block.deleted_at is null and secretary_block.blocker_id = ? and secretary_block.blocked_id = secretary.id
+                left join posts p on p.club_id = c.id and p.deleted_at is null and p.post_kind = 'CLUB' and p.status = 'PUBLISHED'
+                left join user_blocks post_block on post_block.deleted_at is null and post_block.blocker_id = ? and post_block.blocked_id = p.user_id
                 where c.id = ?
                 group by c.id, c.name, c.description, c.category, president.name, president_block.blocked_id
                 """, JdbcResponseMapper.INSTANCE, currentUserId, currentUserId, currentUserId, currentUserId, clubId);
@@ -532,12 +592,12 @@ public class UserFeatureController {
                        u.admission_year, u.job_title, m.name as major_name,
                        co.name as company_name, i.name as industry_name
                 from club_members cm
-                join users u on u.id = cm.user_id
+                join users u on u.id = cm.user_id and u.deleted_at is null
                 join majors m on m.id = u.major_id
-                left join companies co on co.id = u.company_id
+                left join companies co on co.id = u.company_id and co.deleted_at is null
                 left join industries i on i.id = u.industry_id
-                where cm.club_id = ? and cm.left_at is null
-                  and not exists (select 1 from user_blocks ub where ub.blocker_id = ? and ub.blocked_id = u.id)
+                where cm.club_id = ? and cm.left_at is null and cm.deleted_at is null
+                  and not exists (select 1 from user_blocks ub where ub.deleted_at is null and ub.blocker_id = ? and ub.blocked_id = u.id)
                 order by case cm.club_role when 'PRESIDENT' then 1 when 'MANAGER' then 2 else 3 end, u.name
                 """, JdbcResponseMapper.INSTANCE, clubId, currentUserId);
     }
@@ -616,9 +676,9 @@ public class UserFeatureController {
                 select a.id, a.status, a.applied_at, u.id as user_id, u.name,
                        u.admission_year, m.name as major_name, co.name as company_name, u.job_title
                 from club_join_applications a
-                join users u on u.id = a.user_id
+                join users u on u.id = a.user_id and u.deleted_at is null
                 join majors m on m.id = u.major_id
-                left join companies co on co.id = u.company_id
+                left join companies co on co.id = u.company_id and co.deleted_at is null
                 where a.club_id = ? and a.status = 'PENDING'
                 order by a.applied_at, a.id
                 """, JdbcResponseMapper.INSTANCE, clubId);
@@ -649,7 +709,7 @@ public class UserFeatureController {
         if (decision.equals("APPROVE")) {
             int reactivated = jdbcTemplate.update("""
                     update club_members
-                    set club_role = 'MEMBER', joined_at = CURRENT_TIMESTAMP, left_at = null
+                    set club_role = 'MEMBER', joined_at = CURRENT_TIMESTAMP, left_at = null, deleted_at = null
                     where club_id = ? and user_id = ?
                     """, clubId, applicantId);
             if (reactivated == 0) {
@@ -724,9 +784,9 @@ public class UserFeatureController {
                 select p.id, p.title, p.body, p.thumbnail_url, p.created_at,
                        case when u.status = 'WITHDRAWN' then '탈퇴한 사용자' else u.name end as author_name
                 from posts p
-                join users u on u.id = p.user_id
-                where p.club_id = ? and p.post_kind = 'CLUB' and p.status = 'PUBLISHED'
-                  and not exists (select 1 from user_blocks ub where ub.blocker_id = ? and ub.blocked_id = p.user_id)
+                join users u on u.id = p.user_id and u.deleted_at is null
+                where p.club_id = ? and p.deleted_at is null and p.post_kind = 'CLUB' and p.status = 'PUBLISHED'
+                  and not exists (select 1 from user_blocks ub where ub.deleted_at is null and ub.blocker_id = ? and ub.blocked_id = p.user_id)
                 order by p.id desc
                 """, JdbcResponseMapper.INSTANCE, clubId, currentUserId);
     }
@@ -740,9 +800,9 @@ public class UserFeatureController {
                 select p.id, p.title, p.body, p.thumbnail_url, p.created_at,
                        case when u.status = 'WITHDRAWN' then '탈퇴한 사용자' else u.name end as author_name
                 from posts p
-                join users u on u.id = p.user_id
-                where p.id = ? and p.club_id = ? and p.post_kind = 'CLUB' and p.status = 'PUBLISHED'
-                  and not exists (select 1 from user_blocks ub where ub.blocker_id = ? and ub.blocked_id = p.user_id)
+                join users u on u.id = p.user_id and u.deleted_at is null
+                where p.id = ? and p.deleted_at is null and p.club_id = ? and p.post_kind = 'CLUB' and p.status = 'PUBLISHED'
+                  and not exists (select 1 from user_blocks ub where ub.deleted_at is null and ub.blocker_id = ? and ub.blocked_id = p.user_id)
                 """, JdbcResponseMapper.INSTANCE, postId, clubId, currentUserId);
         return requirePost(rows);
     }
@@ -807,10 +867,10 @@ public class UserFeatureController {
                        case when u.status = 'WITHDRAWN' then '탈퇴한 사용자'
                             else coalesce(u.name, a.name) end as author_name
                 from posts p
-                left join users u on u.id = p.user_id
+                left join users u on u.id = p.user_id and u.deleted_at is null
                 left join admins a on a.id = p.admin_id
-                where p.id = ? and p.post_kind in ('NOTICE', 'NEWS') and p.status = 'PUBLISHED'
-                  and not exists (select 1 from user_blocks ub where ub.blocker_id = ? and ub.blocked_id = p.user_id)
+                where p.id = ? and p.deleted_at is null and p.post_kind in ('NOTICE', 'NEWS') and p.status = 'PUBLISHED'
+                  and not exists (select 1 from user_blocks ub where ub.deleted_at is null and ub.blocker_id = ? and ub.blocked_id = p.user_id)
                 """, JdbcResponseMapper.INSTANCE, id, currentUserId);
         return requirePost(rows);
     }
@@ -839,14 +899,14 @@ public class UserFeatureController {
                        p.industry_id, i.name as industry_name,
                        p.club_id, c.name as club_name, c.category as club_category
                 from posts p
-                left join users u on u.id = p.user_id
+                left join users u on u.id = p.user_id and u.deleted_at is null
                 left join admins a on a.id = p.admin_id
                 left join industries i on i.id = p.industry_id
                 left join clubs c on c.id = p.club_id
-                where p.status = 'PUBLISHED'
+                where p.deleted_at is null and p.status = 'PUBLISHED'
                   and p.post_kind in ('NOTICE', 'NEWS', 'CLUB', 'BUSINESS')
                   and (p.post_kind <> 'CLUB' or p.club_id is not null)
-                  and not exists (select 1 from user_blocks ub where ub.blocker_id = ? and ub.blocked_id = p.user_id)
+                  and not exists (select 1 from user_blocks ub where ub.deleted_at is null and ub.blocker_id = ? and ub.blocked_id = p.user_id)
                 order by p.created_at desc, p.id desc
                 limit ?
                 """, JdbcResponseMapper.INSTANCE, currentUserId, limit);
@@ -898,7 +958,7 @@ public class UserFeatureController {
         return jdbcTemplate.query("""
                 select ub.id, ub.blocked_id, u.name, u.phone, m.name as major_name, ub.created_at
                 from user_blocks ub
-                join users u on u.id = ub.blocked_id
+                join users u on u.id = ub.blocked_id and u.deleted_at is null
                 join majors m on m.id = u.major_id
                 where ub.blocker_id = ?
                 order by ub.id desc
@@ -936,14 +996,14 @@ public class UserFeatureController {
                             else coalesce(u.name, a.name) end as author_name,
                        p.industry_id, i.name as industry_name
                 from posts p
-                left join users u on u.id = p.user_id
+                left join users u on u.id = p.user_id and u.deleted_at is null
                 left join admins a on a.id = p.admin_id
                 left join industries i on i.id = p.industry_id
-                where p.status = 'PUBLISHED'
+                where p.deleted_at is null and p.status = 'PUBLISHED'
                   and p.post_kind = ?
                   and (? is null or p.id < ?)
                   and (? is null or p.industry_id = ?)
-                  and not exists (select 1 from user_blocks ub where ub.blocker_id = ? and ub.blocked_id = p.user_id)
+                  and not exists (select 1 from user_blocks ub where ub.deleted_at is null and ub.blocker_id = ? and ub.blocked_id = p.user_id)
                 order by p.id desc
                 limit ?
                 """, JdbcResponseMapper.INSTANCE, kind, cursor, cursor, industryId, industryId,
@@ -960,11 +1020,11 @@ public class UserFeatureController {
                             else coalesce(u.name, a.name) end as author_name,
                        p.industry_id, i.name as industry_name
                 from posts p
-                left join users u on u.id = p.user_id
+                left join users u on u.id = p.user_id and u.deleted_at is null
                 left join admins a on a.id = p.admin_id
                 left join industries i on i.id = p.industry_id
-                where p.id = ? and p.post_kind = ? and p.status = 'PUBLISHED'
-                  and not exists (select 1 from user_blocks ub where ub.blocker_id = ? and ub.blocked_id = p.user_id)
+                where p.id = ? and p.deleted_at is null and p.post_kind = ? and p.status = 'PUBLISHED'
+                  and not exists (select 1 from user_blocks ub where ub.deleted_at is null and ub.blocker_id = ? and ub.blocked_id = p.user_id)
                 """, JdbcResponseMapper.INSTANCE, id, kind, currentUserId);
         return requirePost(rows);
     }
@@ -998,7 +1058,7 @@ public class UserFeatureController {
     private boolean isActiveClubMember(Long clubId, Long userId) {
         Integer count = jdbcTemplate.queryForObject("""
                 select count(*) from club_members
-                where club_id = ? and user_id = ? and left_at is null
+                where club_id = ? and user_id = ? and left_at is null and deleted_at is null
                 """, Integer.class, clubId, userId);
         return count != null && count > 0;
     }
@@ -1015,14 +1075,14 @@ public class UserFeatureController {
                                     from club_members legacy_manager
                                     where legacy_manager.club_id = c.id
                                       and legacy_manager.club_role = 'MANAGER'
-                                      and legacy_manager.left_at is null
+                                      and legacy_manager.left_at is null and legacy_manager.deleted_at is null
                                 )
                            then 'MANAGER'
                            when cm.id is not null then 'MEMBER'
                            else ''
                        end
                 from clubs c
-                left join club_members cm on cm.club_id = c.id and cm.user_id = ? and cm.left_at is null
+                left join club_members cm on cm.club_id = c.id and cm.user_id = ? and cm.left_at is null and cm.deleted_at is null
                 where c.id = ?
                 """, String.class, userId, userId, userId, clubId);
         return roles.isEmpty() ? "" : roles.get(0);
