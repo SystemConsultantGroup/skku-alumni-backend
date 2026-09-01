@@ -45,6 +45,7 @@ public class AdminFeatureController {
     private final PushNotificationService pushNotificationService;
     private final AdminRoleGuard adminRoleGuard;
     private final PasswordEncoder passwordEncoder;
+    private final OfficerAssignment officerAssignment;
 
     @GetMapping("/dashboard")
     public Map<String, Object> findDashboard() {
@@ -337,12 +338,10 @@ public class AdminFeatureController {
         if (officerRoleId == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "직책 이력이 없는 회원입니다. 직책을 함께 지정해주세요.");
         }
-        String roleName = jdbcTemplate.queryForObject("select name from officer_roles where id = ?", String.class, officerRoleId);
-
-        ensureCurrentOfficerHistory(request.userId(), request.officerTermId(), officerRoleId);
+        officerAssignment.ensureHistory(request.userId(), request.officerTermId(), officerRoleId);
+        officerAssignment.ensurePaymentRecord(request.userId(), request.officerTermId(), officerRoleId);
         // 공직자 부회장(50만원)처럼 예외가 있어 사무처가 금액을 지정할 수 있다.
-        int amount = request.amount() != null ? request.amount() : paymentAmount(roleName);
-        ensurePaymentRecord(request.userId(), request.officerTermId(), amount);
+        int amount = request.amount() != null ? request.amount() : officerAssignment.duesAmount(officerRoleId);
         jdbcTemplate.update("""
                 update payment_records set amount = ?, updated_at = CURRENT_TIMESTAMP
                 where user_id = ? and officer_term_id = ?
@@ -867,13 +866,12 @@ public class AdminFeatureController {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "신청을 찾을 수 없습니다."));
 
         Long majorId = findMajorId(text(application.get("majorName")));
-        Long officerRoleId = findOfficerRoleId(text(application.get("desiredRole")));
-        Long officerTermId = findCurrentOfficerTermId();
+        Long officerRoleId = officerAssignment.findRoleId(text(application.get("desiredRole")));
+        Long officerTermId = officerAssignment.findCurrentTermId();
         Long companyId = findOrCreateCompanyId(text(application.get("companyName")));
         Long userId = findOrCreateApplicationUser(application, majorId, companyId);
 
-        ensureCurrentOfficerHistory(userId, officerTermId, officerRoleId);
-        ensurePaymentRecord(userId, officerTermId, paymentAmount(text(application.get("desiredRole"))));
+        officerAssignment.assign(userId, officerTermId, officerRoleId);
 
         jdbcTemplate.update("""
                 update member_applications
@@ -956,35 +954,6 @@ public class AdminFeatureController {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "일치하는 학과를 찾을 수 없습니다."));
     }
 
-    private Long findOfficerRoleId(String roleName) {
-        if (!StringUtils.hasText(roleName)) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "희망 직급이 필요합니다.");
-        }
-        return jdbcTemplate.query("""
-                select id
-                from officer_roles
-                where lower(replace(name, ' ', '')) = ?
-                order by id
-                limit 1
-                """, (resultSet, rowNum) -> resultSet.getLong("id"), normalizeText(roleName))
-                .stream()
-                .findFirst()
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "일치하는 임원 직급을 찾을 수 없습니다."));
-    }
-
-    private Long findCurrentOfficerTermId() {
-        return jdbcTemplate.query("""
-                select id
-                from officer_terms
-                where current_term = true
-                order by id desc
-                limit 1
-                """, (resultSet, rowNum) -> resultSet.getLong("id"))
-                .stream()
-                .findFirst()
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "현행 임기를 찾을 수 없습니다."));
-    }
-
     private Long findOrCreateCompanyId(String companyName) {
         if (!StringUtils.hasText(companyName)) {
             return null;
@@ -1011,54 +980,6 @@ public class AdminFeatureController {
                 values (?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """, companyName);
         return jdbcTemplate.queryForObject("select id from companies where name = ? and deleted_at is null", Long.class, companyName);
-    }
-
-    private void ensureCurrentOfficerHistory(Long userId, Long officerTermId, Long officerRoleId) {
-        Integer count = jdbcTemplate.queryForObject("""
-                select count(*)
-                from officer_histories
-                where user_id = ?
-                  and officer_term_id = ?
-                """, Integer.class, userId, officerTermId);
-        if (count != null && count > 0) {
-            jdbcTemplate.update("""
-                    update officer_histories
-                    set officer_role_id = ?, deleted_at = null, updated_at = CURRENT_TIMESTAMP
-                    where user_id = ?
-                      and officer_term_id = ?
-                    """, officerRoleId, userId, officerTermId);
-            return;
-        }
-        jdbcTemplate.update("""
-                insert into officer_histories (
-                    user_id, officer_term_id, officer_role_id, started_at, payment_status, created_at, updated_at
-                )
-                select ?, id, ?, started_at, 'UNPAID', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-                from officer_terms
-                where id = ?
-                """, userId, officerRoleId, officerTermId);
-    }
-
-    private void ensurePaymentRecord(Long userId, Long officerTermId, int amount) {
-        Integer count = jdbcTemplate.queryForObject("""
-                select count(*)
-                from payment_records
-                where user_id = ?
-                  and officer_term_id = ?
-                """, Integer.class, userId, officerTermId);
-        if (count != null && count > 0) {
-            jdbcTemplate.update("""
-                    update payment_records
-                    set deleted_at = null, updated_at = CURRENT_TIMESTAMP
-                    where user_id = ? and officer_term_id = ? and deleted_at is not null
-                    """, userId, officerTermId);
-            return;
-        }
-        jdbcTemplate.update("""
-                insert into payment_records (
-                    user_id, officer_term_id, amount, status, created_at, updated_at
-                ) values (?, ?, ?, 'UNPAID', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                """, userId, officerTermId, amount);
     }
 
     private boolean hasPaidCurrentOfficerFee(Long userId) {
@@ -1089,28 +1010,6 @@ public class AdminFeatureController {
                 .stream()
                 .findFirst()
                 .orElse(null);
-    }
-
-    /**
-     * 직책별 임원 기여금.
-     *
-     * <p>금액은 officer_roles 에 있다. 회비는 임기와 회칙에 따라 바뀌는 값이라
-     * 코드에 박아두면 조정할 때마다 배포해야 한다. 사무처가 회비 관리 화면에서
-     * 직접 고친다.
-     *
-     * <p>0은 "정해진 금액 없음"이다. 회장처럼 약정으로 정하는 직책이 여기 해당한다.
-     * 이 경우 납부를 등록할 때 사무처가 금액을 직접 넣어야 한다.
-     */
-    private int paymentAmount(String roleName) {
-        Integer amount = jdbcTemplate.query("""
-                select dues_amount
-                from officer_roles
-                where name = ?
-                """, (resultSet, rowNum) -> resultSet.getInt(1), roleName)
-                .stream()
-                .findFirst()
-                .orElse(0);
-        return amount == null ? 0 : amount;
     }
 
     private String text(Object value) {
