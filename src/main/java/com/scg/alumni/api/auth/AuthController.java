@@ -1,5 +1,7 @@
 package com.scg.alumni.api.auth;
 
+import java.util.List;
+import com.scg.alumni.domain.academic.MajorNames;
 import com.scg.alumni.global.security.AdminRoleGuard;
 import com.scg.alumni.global.security.AuthContext;
 import com.scg.alumni.global.security.AuthProperties;
@@ -37,6 +39,9 @@ public class AuthController {
 
     private final JdbcTemplate jdbcTemplate;
     private final PasswordEncoder passwordEncoder;
+    /** 어느 학과에도 없는 id. 후보가 없을 때 in () 문법 오류를 피한다. */
+    private static final long NO_MAJOR = -1L;
+
     private final JwtTokenService jwtTokenService;
     private final RefreshTokenService refreshTokenService;
     private final AuthProperties authProperties;
@@ -232,18 +237,13 @@ public class AuthController {
     }
 
     private SignupCandidate findSignupCandidate(SignupRequest request) {
+        List<Long> equivalentMajorIds = equivalentMajorIds(request.majorName());
         return jdbcTemplate.query("""
                         select u.id, u.name, u.phone, u.email, u.status, u.kingo_id, u.password
                         from users u
-                        join majors m on m.id = u.major_id
                         where u.name = ?
                           and u.admission_year = ?
-                          and coalesce(m.display_major_id, m.id) in (
-                              select coalesce(s.display_major_id, s.id)
-                              from majors s
-                              where lower(replace(s.name, ' ', '')) = ?
-                                 or lower(replace(s.normalized_name, ' ', '')) = ?
-                          )
+                          and u.major_id in (%s)
                           and replace(replace(replace(coalesce(u.phone, ''), '-', ''), ' ', ''), '.', '') = ?
                           and exists (
                               select oh.id
@@ -254,7 +254,7 @@ public class AuthController {
                           )
                         order by u.id
                         limit 1
-                        """,
+                        """.formatted(placeholders(equivalentMajorIds.size())),
                 (resultSet, rowNum) -> new SignupCandidate(
                         resultSet.getLong("id"),
                         resultSet.getString("name"),
@@ -264,12 +264,80 @@ public class AuthController {
                         resultSet.getString("kingo_id"),
                         resultSet.getString("password")
                 ),
-                request.name().trim(), request.admissionYear(),
-                normalizeText(request.majorName()), normalizeText(request.majorName()),
-                normalizePhone(request.phone()))
+                arguments(request.name().trim(), request.admissionYear(),
+                        equivalentMajorIds, normalizePhone(request.phone())))
                 .stream()
                 .findFirst()
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "일치하는 동문 정보를 찾을 수 없습니다."));
+    }
+
+    /**
+     * 고른 학과와 같은 학과로 볼 학과 id 들.
+     *
+     * <p>이름이 바뀐 학과(산업공학과 ↔ 시스템경영공학과)와 야간 표기((야)법학과 ↔ 법학과)를
+     * 같은 학과로 묶는다. 화면이 보여주는 이름과 같은 규칙({@link MajorNames#canonicalKey})으로
+     * 판단해야 한다 — 목록에 '법학과'로 보이는데 그 이름으로 본인이 안 찾아지면 안 된다.
+     *
+     * <p>학과 수가 수백 개 수준이라 전부 읽어 자바에서 묶어도 부담이 없다.
+     */
+    private List<Long> equivalentMajorIds(String majorName) {
+        String wanted = MajorNames.canonicalKey(majorName == null ? "" : majorName);
+        if (wanted.isEmpty()) {
+            return List.of(NO_MAJOR);
+        }
+        List<Map<String, Object>> majors = jdbcTemplate.queryForList(
+                "select id, name, normalized_name, display_major_id from majors");
+        Map<Long, String> nameById = new java.util.HashMap<>();
+        majors.forEach(major -> nameById.put(number(major.get("id")), text(major.get("name"))));
+
+        // 고른 이름이 옛 이름일 수 있다. 먼저 그 이름에 해당하는 학과의 대표 이름까지
+        // 찾고 싶은 이름에 넣는다 — '법률학과'를 골랐으면 '법학과'도 같은 학과다.
+        java.util.Set<String> wantedKeys = new java.util.HashSet<>();
+        wantedKeys.add(wanted);
+        for (Map<String, Object> major : majors) {
+            if (wanted.equals(MajorNames.canonicalKey(text(major.get("name"))))
+                    || wanted.equals(MajorNames.canonicalKey(text(major.get("normalized_name"))))) {
+                wantedKeys.add(MajorNames.canonicalKey(shownName(major, nameById)));
+            }
+        }
+
+        List<Long> matched = new java.util.ArrayList<>();
+        for (Map<String, Object> major : majors) {
+            if (wantedKeys.contains(MajorNames.canonicalKey(shownName(major, nameById)))
+                    || wantedKeys.contains(MajorNames.canonicalKey(text(major.get("name"))))) {
+                matched.add(number(major.get("id")));
+            }
+        }
+        // 빈 목록이면 in () 가 문법 오류다. 어디에도 없는 id 를 넣어 아무도 찾지 않게 한다.
+        return matched.isEmpty() ? List.of(NO_MAJOR) : matched;
+    }
+
+    /** 그 학과가 화면에 내보이는 이름. 이어받은 학과가 있으면 그 이름을 쓴다. */
+    private String shownName(Map<String, Object> major, Map<Long, String> nameById) {
+        Long displayMajorId = number(major.get("display_major_id"));
+        String own = text(major.get("name"));
+        return displayMajorId == null ? own : nameById.getOrDefault(displayMajorId, own);
+    }
+
+    private String text(Object value) {
+        return value == null ? "" : value.toString();
+    }
+
+    private Long number(Object value) {
+        return value instanceof Number n ? n.longValue() : null;
+    }
+
+    private String placeholders(int count) {
+        return String.join(", ", java.util.Collections.nCopies(count, "?"));
+    }
+
+    private Object[] arguments(String name, Integer admissionYear, List<Long> majorIds, String phone) {
+        List<Object> arguments = new java.util.ArrayList<>();
+        arguments.add(name);
+        arguments.add(admissionYear);
+        arguments.addAll(majorIds);
+        arguments.add(phone);
+        return arguments.toArray();
     }
 
     private boolean confirmationMatches(SignupCandidate candidate, SignupRequest request) {

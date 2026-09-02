@@ -1,6 +1,7 @@
 package com.scg.alumni.api.operations;
 
 import com.scg.alumni.api.common.CursorPageResponse;
+import com.scg.alumni.domain.academic.MajorNames;
 import com.scg.alumni.api.common.MarkdownImageExtractor;
 import com.scg.alumni.domain.officer.OfficerTerm;
 import com.scg.alumni.global.security.AuthContext;
@@ -46,14 +47,14 @@ public class UserFeatureController {
     @GetMapping("/me")
     public Map<String, Object> findMe() {
         Long currentUserId = AuthContext.currentMemberId();
-        Map<String, Object> profile = jdbcTemplate.queryForObject("""
+        Map<String, Object> profile = MajorNames.hideNightMarkers(jdbcTemplate.queryForObject("""
                 select u.id, u.name, u.student_id, u.profile_image_url, u.email, u.phone, u.home_zipcode, u.home_address1, u.home_address2,
                        u.birth_date, u.birth_date_public, u.phone_public, u.email_public,
                        u.home_address_public, u.notification_enabled,
                        u.notice_notification_enabled, u.club_notification_enabled,
                        u.admission_year, u.graduation_year, u.job_title, u.pr_text, u.company_id,
                        u.work_zipcode, u.work_address1, u.work_address2,
-                       m.name as major_name, co.name as company_name,
+                       %s as major_name, co.name as company_name,
                        u.work_zipcode as company_zipcode, u.work_address1 as company_address1,
                        u.work_address2 as company_address2, co.description as company_description,
                        u.industry_id, i.name as industry_name,
@@ -61,6 +62,7 @@ public class UserFeatureController {
                        orole.name as officer_role_name
                 from users u
                 join majors m on m.id = u.major_id
+                left join majors dm on dm.id = m.display_major_id
                 left join companies co on co.id = u.company_id and co.deleted_at is null
                 left join industries i on i.id = u.industry_id
                 left join officer_histories oh on oh.id = (
@@ -77,7 +79,8 @@ public class UserFeatureController {
                 left join officer_terms ot on ot.id = oh.officer_term_id
                 left join officer_roles orole on orole.id = oh.officer_role_id
                 where u.id = ?
-                """, JdbcResponseMapper.INSTANCE, OfficerTerm.GRACE_DAYS, currentUserId);
+                """.formatted(MajorNames.displayNameColumn("m", "dm")),
+                JdbcResponseMapper.INSTANCE, OfficerTerm.GRACE_DAYS, currentUserId));
         profile.put("hobbies", jdbcTemplate.query("""
                 select h.id, h.name
                 from user_hobbies uh
@@ -240,13 +243,14 @@ public class UserFeatureController {
                        case when u.email_public then u.email else null end as email,
                        case when u.home_address_public then u.home_address1 else null end as home_address1,
                        case when u.home_address_public then u.home_address2 else null end as home_address2,
-                       m.name as major_name, co.name as company_name,
+                       %s as major_name, co.name as company_name,
                        u.work_zipcode as company_zipcode, u.work_address1 as company_address1,
                        u.work_address2 as company_address2, co.description as company_description,
                        i.name as industry_name, ot.generation as officer_generation,
                        ot.phase as officer_phase, orole.name as officer_role_name
                 from users u
                 join majors m on m.id = u.major_id
+                left join majors dm on dm.id = m.display_major_id
                 join officer_histories oh on oh.user_id = u.id and oh.deleted_at is null
                 join officer_terms ot on ot.id = oh.officer_term_id
                     and ot.started_at <= CURRENT_DATE
@@ -259,8 +263,10 @@ public class UserFeatureController {
                       select 1 from user_blocks ub where ub.deleted_at is null and ub.blocker_id = ? and ub.blocked_id = u.id
                   )
                 order by ot.started_at desc
-                """, JdbcResponseMapper.INSTANCE, OfficerTerm.GRACE_DAYS, memberId, AuthContext.currentMemberId()).stream()
+                """.formatted(MajorNames.displayNameColumn("m", "dm")),
+                JdbcResponseMapper.INSTANCE, OfficerTerm.GRACE_DAYS, memberId, AuthContext.currentMemberId()).stream()
                 .findFirst()
+                .map(MajorNames::hideNightMarkers)
                 .orElseThrow(() -> new IllegalArgumentException("임원 정보를 찾을 수 없습니다."));
         member.put("hobbies", jdbcTemplate.queryForList("""
                 select h.name from user_hobbies uh join hobbies h on h.id = uh.hobby_id
@@ -605,19 +611,20 @@ public class UserFeatureController {
     @GetMapping("/clubs/{clubId}/members")
     public List<Map<String, Object>> findClubMembers(@PathVariable Long clubId) {
         Long currentUserId = AuthContext.currentMemberIdOrNull();
-        return jdbcTemplate.query("""
+        return MajorNames.hideNightMarkers(jdbcTemplate.query("""
                 select cm.id, cm.club_role, cm.joined_at, u.id as user_id, u.name,
-                       u.admission_year, u.job_title, m.name as major_name,
+                       u.admission_year, u.job_title, %s as major_name,
                        co.name as company_name, i.name as industry_name
                 from club_members cm
                 join users u on u.id = cm.user_id and u.deleted_at is null
                 join majors m on m.id = u.major_id
+                left join majors dm on dm.id = m.display_major_id
                 left join companies co on co.id = u.company_id and co.deleted_at is null
                 left join industries i on i.id = u.industry_id
                 where cm.club_id = ? and cm.left_at is null and cm.deleted_at is null
                   and not exists (select 1 from user_blocks ub where ub.deleted_at is null and ub.blocker_id = ? and ub.blocked_id = u.id)
                 order by case cm.club_role when 'PRESIDENT' then 1 when 'MANAGER' then 2 else 3 end, u.name
-                """, JdbcResponseMapper.INSTANCE, clubId, currentUserId);
+                """.formatted(MajorNames.displayNameColumn("m", "dm")), JdbcResponseMapper.INSTANCE, clubId, currentUserId));
     }
 
     @GetMapping("/clubs/{clubId}/membership")
@@ -690,16 +697,17 @@ public class UserFeatureController {
     public List<Map<String, Object>> findClubApplications(@PathVariable Long clubId) {
         Long currentUserId = AuthContext.currentMemberId();
         requireClubManager(clubId, currentUserId);
-        return jdbcTemplate.query("""
+        return MajorNames.hideNightMarkers(jdbcTemplate.query("""
                 select a.id, a.status, a.applied_at, u.id as user_id, u.name,
-                       u.admission_year, m.name as major_name, co.name as company_name, u.job_title
+                       u.admission_year, %s as major_name, co.name as company_name, u.job_title
                 from club_join_applications a
                 join users u on u.id = a.user_id and u.deleted_at is null
                 join majors m on m.id = u.major_id
+                left join majors dm on dm.id = m.display_major_id
                 left join companies co on co.id = u.company_id and co.deleted_at is null
                 where a.club_id = ? and a.status = 'PENDING'
                 order by a.applied_at, a.id
-                """, JdbcResponseMapper.INSTANCE, clubId);
+                """.formatted(MajorNames.displayNameColumn("m", "dm")), JdbcResponseMapper.INSTANCE, clubId));
     }
 
     @PatchMapping("/clubs/{clubId}/applications/{applicationId}")
@@ -973,16 +981,17 @@ public class UserFeatureController {
     @GetMapping("/blocked-users")
     public List<Map<String, Object>> findBlockedUsers() {
         Long currentUserId = AuthContext.currentMemberId();
-        return jdbcTemplate.query("""
+        return MajorNames.hideNightMarkers(jdbcTemplate.query("""
                 select ub.id, ub.blocked_id, u.name,
                        case when u.phone_public then u.phone else null end as phone,
-                       m.name as major_name, ub.created_at
+                       %s as major_name, ub.created_at
                 from user_blocks ub
                 join users u on u.id = ub.blocked_id and u.deleted_at is null
                 left join majors m on m.id = u.major_id
+                left join majors dm on dm.id = m.display_major_id
                 where ub.blocker_id = ?
                 order by ub.id desc
-                """, JdbcResponseMapper.INSTANCE, currentUserId);
+                """.formatted(MajorNames.displayNameColumn("m", "dm")), JdbcResponseMapper.INSTANCE, currentUserId));
     }
 
     @PostMapping("/blocked-users")
