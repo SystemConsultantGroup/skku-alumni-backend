@@ -1133,15 +1133,20 @@ public class UserFeatureController {
     }
 
     private void logProfileChange(String fieldName, Object oldValue, Object newValue) {
-        if ((oldValue == null && newValue == null) || (oldValue != null && oldValue.equals(newValue))) {
+        // 값이 같은지는 저장될 문자열로 판단한다. DB 에서 읽은 생일은 java.sql.Date 이고
+        // 요청으로 온 생일은 LocalDate 라서, 같은 날짜여도 equals 가 false 다. 그대로 두면
+        // 아무것도 바꾸지 않은 저장에도 "1984-03-30 → 1984-03-30" 같은 이력이 쌓이고,
+        // 사무처의 ASIS 최신화 목록이 헛일로 채워진다.
+        String before = oldValue == null ? null : oldValue.toString();
+        String after = newValue == null ? null : newValue.toString();
+        if (java.util.Objects.equals(before, after)) {
             return;
         }
         jdbcTemplate.update("""
                 insert into profile_change_logs (
                     user_id, field_name, old_value, new_value, synced, changed_at, created_at, updated_at
                 ) values (?, ?, ?, ?, FALSE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                """, AuthContext.currentMemberId(), fieldName, oldValue == null ? null : oldValue.toString(),
-                newValue == null ? null : newValue.toString());
+                """, AuthContext.currentMemberId(), fieldName, before, after);
     }
 
     private String blankToEmpty(String value) {
