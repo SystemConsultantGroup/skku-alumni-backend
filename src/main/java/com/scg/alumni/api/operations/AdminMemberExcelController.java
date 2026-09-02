@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import com.scg.alumni.domain.academic.MajorNames;
 import com.scg.alumni.infrastructure.minio.MinioProperties;
 import io.minio.GetObjectArgs;
 import io.minio.MinioClient;
@@ -157,7 +158,7 @@ public class AdminMemberExcelController {
                     {"학번", "필수 · 중복 기준 · 기존 학번이면 그 회원의 정보를 수정합니다. (예: 2020123456)"},
                     {"이름", "필수"},
                     {"킹고아이디", "선택 · 앱 로그인 아이디입니다. 회원마다 달라야 하며, 다른 회원이 쓰고 있으면 해당 행 번호와 함께 오류가 납니다."},
-                    {"학과", "필수 · '학과 목록' 시트에 있는 명칭을 그대로 입력합니다. 목록에 없는 학과를 쓰면 해당 행 번호와 함께 오류가 납니다."},
+                    {"학과", "필수 · '학과 목록' 시트에 있는 명칭을 그대로 입력합니다. 목록에 없는 학과는 새로 등록되며, 어떤 학과가 등록됐는지 업로드 뒤에 알려드립니다. 오타도 그대로 등록되니 확인해주세요."},
                     {"입학연도", "필수 · 1900~2100 사이의 4자리 숫자 (예: 2020)"},
                     {"졸업연도", "선택 · 1900~2100 사이의 4자리 숫자 (예: 2024)"},
                     {"생년월일", "선택 · 1998-03-12 처럼 적습니다. 1998.03.12 / 1998/03/12 / 19980312 도 됩니다."},
@@ -362,6 +363,8 @@ public class AdminMemberExcelController {
         if (file.getSize() > 10 * 1024 * 1024) throw badRequest("엑셀 파일은 10MB 이하만 업로드할 수 있습니다.");
         int created = 0;
         int updated = 0;
+        Map<String, Long> majorIds = loadMajorIds();
+        List<String> createdMajors = new java.util.ArrayList<>();
         String temporaryPassword = passwordEncoder.encode(UUID.randomUUID().toString());
         DataFormatter formatter = new DataFormatter(Locale.KOREA);
         try (XSSFWorkbook workbook = new XSSFWorkbook(file.getInputStream())) {
@@ -379,9 +382,7 @@ public class AdminMemberExcelController {
                 String majorName = required(row, MAJOR, "학과", excelRow, formatter);
                 int admissionYear = parseYear(required(row, ADMISSION_YEAR, "입학연도", excelRow, formatter),
                         "입학연도", excelRow);
-                Long majorId = jdbcTemplate.query("select id from majors where lower(replace(name, ' ', '')) = lower(replace(?, ' ', '')) limit 1",
-                        resultSet -> resultSet.next() ? resultSet.getLong(1) : null, majorName);
-                if (majorId == null) throw badRequest(excelRow + "행: 등록되지 않은 학과입니다. (" + majorName + ")");
+                Long majorId = findOrCreateMajor(majorIds, majorName, createdMajors);
 
                 String companyName = value(row, COMPANY, formatter);
                 Long companyId = StringUtils.hasText(companyName) ? findOrCreateCompany(companyName.trim()) : null;
@@ -445,7 +446,8 @@ public class AdminMemberExcelController {
         } catch (Exception exception) {
             throw badRequest("엑셀 파일을 읽을 수 없습니다. .xlsx 형식과 입력값을 확인해주세요.");
         }
-        return Map.of("created", created, "updated", updated, "total", created + updated);
+        return Map.of("created", created, "updated", updated, "total", created + updated,
+                "createdMajors", List.copyOf(createdMajors));
     }
 
     /**
@@ -484,6 +486,65 @@ public class AdminMemberExcelController {
                             + ", updated_at = CURRENT_TIMESTAMP where student_id = ?",
                     arguments.toArray());
         }
+    }
+
+    /**
+     * 학과를 이름으로 찾기 위한 열쇠판. 업로드 한 번에 한 번만 읽는다.
+     *
+     * <p>줄마다 조회하면 5,000줄에 5,000번이고, 같은 파일 안에서 같은 학과가
+     * 여러 번 새로 만들어지는 것도 이 판으로 막는다.
+     *
+     * <p>열쇠는 야간 표기와 공백·대소문자를 지운 이름이다({@link MajorNames#canonicalKey}).
+     * '(야)법학과'를 적었다고 법학과 옆에 같은 학과가 하나 더 생기면 안 된다.
+     * 비교를 SQL 이 아니라 자바에서 하는 이유는 {@link MajorNames} 에 적어둔 그대로다.
+     *
+     * <p>이름이 바뀐 학과는 적힌 이름 그대로 넣는다 — '산업공학과'로 부으면
+     * 산업공학과로 저장되고, 화면에 보일 이름을 고르는 일은 조회할 때 따로 한다.
+     */
+    private Map<String, Long> loadMajorIds() {
+        // 같은 열쇠를 가리키는 학과가 여럿이면 쓰이는 학과(ACTIVE)를 먼저 잡는다.
+        List<Map<String, Object>> majors = jdbcTemplate.queryForList(
+                "select id, name, normalized_name from majors order by case when status = 'ACTIVE' then 0 else 1 end, id");
+        Map<String, Long> byName = new java.util.HashMap<>();
+        for (Map<String, Object> major : majors) rememberMajor(byName, major.get("name"), major.get("id"));
+        // 등록명(normalized_name)은 다음 차례다. 한 학과의 등록명이 다른 학과의 이름을 가로채면 안 된다.
+        for (Map<String, Object> major : majors) rememberMajor(byName, major.get("normalized_name"), major.get("id"));
+        return byName;
+    }
+
+    private void rememberMajor(Map<String, Long> byName, Object name, Object id) {
+        if (name == null) return;
+        String key = MajorNames.canonicalKey(name.toString());
+        if (!key.isEmpty()) byName.putIfAbsent(key, ((Number) id).longValue());
+    }
+
+    /**
+     * 명단에 적힌 학과를 찾고, 없으면 새로 등록한다.
+     *
+     * <p>처음 보는 학과 하나 때문에 5,000줄짜리 업로드를 통째로 되돌리면, 사무처는
+     * 학과를 손으로 등록하고 처음부터 다시 올려야 한다. 회사명과 같이 넣고 넘어간다.
+     *
+     * <p>대신 새로 만든 학과는 응답에 담아 화면에 보여준다. 오타로 들어온 학과도
+     * 그대로 등록되므로, 무엇이 생겼는지는 올린 사람이 바로 보고 알아차려야 한다.
+     */
+    private Long findOrCreateMajor(Map<String, Long> majorIds, String majorName, List<String> createdMajors) {
+        String key = MajorNames.canonicalKey(majorName);
+        Long existing = majorIds.get(key);
+        if (existing != null) return existing;
+        KeyHolder keyHolder = new GeneratedKeyHolder();
+        jdbcTemplate.update(connection -> {
+            var statement = connection.prepareStatement("""
+                    insert into majors (name, normalized_name, status, created_at, updated_at)
+                    values (?, ?, 'ACTIVE', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """, new String[]{"id"});
+            statement.setString(1, majorName);
+            statement.setString(2, majorName);
+            return statement;
+        }, keyHolder);
+        Long id = keyHolder.getKey().longValue();
+        majorIds.put(key, id);
+        createdMajors.add(majorName);
+        return id;
     }
 
     private Long findOrCreateCompany(String name) {
