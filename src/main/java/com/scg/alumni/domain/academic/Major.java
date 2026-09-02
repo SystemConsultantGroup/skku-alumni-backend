@@ -49,10 +49,13 @@ public class Major extends BaseTimeEntity {
     @JoinColumn(name = "parent_id")
     private Major parentMajor;
 
+    /**
+     * 회원에게 보여줄 이름. 이어받은 학과를 따르고 야간 표기를 지운다.
+     *
+     * <p>규칙은 {@link MajorNames} 에 있다. 화면마다 다른 이름이 보이면 안 된다.
+     */
     public String getDisplayName() {
-        if (displayMajor == null) {
-            return name;
-        }
-        return displayMajor.getName();
+        String source = displayMajor == null ? name : displayMajor.getName();
+        return MajorNames.stripNightMarkers(source, name);
     }
 }
