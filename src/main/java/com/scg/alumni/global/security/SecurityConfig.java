@@ -56,8 +56,19 @@ public class SecurityConfig {
                         .hasAnyRole(AuthScope.MEMBER.name(), AuthScope.ADMIN.name())
                         .requestMatchers("/api/v1/profile-images", "/api/v1/profile-images/**")
                         .hasRole(AuthScope.MEMBER.name())
+                        // 계정 만들기·임원 신청 화면이 로그인 전에 학과 목록을 받아야 하므로
+                        // 이 하나는 열어 둔다. 다만 여기에는 직장 목록도 함께 실려 나간다 —
+                        // 학과만 내려주는 공개 엔드포인트로 쪼개는 편이 낫다.
+                        .requestMatchers(HttpMethod.GET, "/api/v1/reference-data").permitAll()
+                        // 임원 명부와 커뮤니티는 로그인한 임원만 본다.
+                        //
+                        // 예전에는 이 목록들이 permitAll 이었다. 그래서 로그인 없이
+                        // /api/v1/members 만 호출하면 전 임원의 성명·학과·학번·직장·직책·
+                        // 자기소개를 통째로 긁어갈 수 있었다(회원 상세 /members/{id} 는
+                        // 원래부터 401 이었으니 의도한 공개가 아니었다).
+                        // 서버 컴포넌트도 fetchServerApi 가 회원 쿠키를 그대로 실어 보내므로
+                        // 로그인을 요구해도 화면은 그대로 동작한다.
                         .requestMatchers(HttpMethod.GET,
-                                "/api/v1/reference-data",
                                 "/api/v1/members",
                                 "/api/v1/posts/recent",
                                 "/api/v1/clubs",
@@ -69,7 +80,7 @@ public class SecurityConfig {
                                 "/api/v1/official-posts/*",
                                 "/api/v1/business-posts",
                                 "/api/v1/business-posts/*"
-                        ).permitAll()
+                        ).hasRole(AuthScope.MEMBER.name())
                         .requestMatchers("/api/v1/admin/**").hasRole(AuthScope.ADMIN.name())
                         .requestMatchers("/api/v1/**").hasRole(AuthScope.MEMBER.name())
                         .anyRequest().authenticated()
