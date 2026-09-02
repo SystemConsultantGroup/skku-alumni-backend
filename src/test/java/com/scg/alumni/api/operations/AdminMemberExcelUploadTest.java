@@ -171,6 +171,43 @@ class AdminMemberExcelUploadTest {
                 """, String.class)).isEqualTo("PAID");
     }
 
+    /**
+     * 명단에 처음 보는 학과가 섞여 있다고 업로드 전체를 되돌리면, 사무처는 학과를
+     * 손으로 등록하고 처음부터 다시 올려야 한다. 회사명처럼 만들고 넘어간다.
+     */
+    @Test
+    @Transactional
+    void unknownMajorIsCreatedAndReported() throws Exception {
+        Map<String, Object> result = upload(sheetOf(
+                row("2020999993", "새학과", "테스트학부", "2020"),
+                row("2020999992", "같은학과", "테스트 학부", "2020")));
+
+        assertThat(result.get("created")).isEqualTo(2);
+        // 같은 학과를 표기만 달리 적었다고 학과가 둘로 늘어나면 안 된다.
+        assertThat(result.get("createdMajors")).isEqualTo(List.of("테스트학부"));
+        Map<String, Object> major = jdbcTemplate.queryForMap(
+                "select id, normalized_name, status from majors where name = '테스트학부'");
+        assertThat(major.get("normalized_name")).isEqualTo("테스트학부");
+        assertThat(major.get("status")).isEqualTo("ACTIVE");
+        assertThat(jdbcTemplate.queryForList(
+                "select major_id from users where student_id in ('2020999993', '2020999992')", Long.class))
+                .containsOnly(((Number) major.get("id")).longValue());
+    }
+
+    /** 야간 표기와 공백만 다른 이름은 이미 있는 학과로 붙어야 한다. */
+    @Test
+    @Transactional
+    void nightMarkerVariantReusesTheExistingMajor() throws Exception {
+        Long lawId = jdbcTemplate.queryForObject(
+                "select id from majors where name = '법학과'", Long.class);
+
+        Map<String, Object> result = upload(sheetOf(row("2020999991", "야간생", "(야) 법학과", "2020")));
+
+        assertThat(result.get("createdMajors")).isEqualTo(List.of());
+        assertThat(jdbcTemplate.queryForObject(
+                "select major_id from users where student_id = '2020999991'", Long.class)).isEqualTo(lawId);
+    }
+
     @Test
     @Transactional
     void unknownOfficerRoleIsReportedWithTheRowNumber() throws Exception {
