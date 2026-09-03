@@ -26,7 +26,6 @@ import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
-import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
 /**
  * 사무처가 갖고 있던 임원 사진을 한 번에 올린다.
@@ -62,6 +61,10 @@ public class AdminProfileImageBulkController {
         if (file.getSize() > MAX_ARCHIVE_SIZE) {
             throw badRequest("압축 파일은 200MB 이하만 올릴 수 있습니다.");
         }
+        // ZipInputStream 은 zip 이 아닌 스트림에서도 예외 없이 "항목 0개" 로 끝난다.
+        // 그대로 두면 엉뚱한 파일을 올린 사무처에게 "사진 0장을 등록했습니다" 라는
+        // 성공 문구가 나가고, 무엇을 고쳐야 하는지 알 길이 없다.
+        requireZipSignature(file);
 
         int matched = 0;
         List<String> unmatched = new ArrayList<>();
@@ -109,11 +112,33 @@ public class AdminProfileImageBulkController {
             throw badRequest("압축 파일을 읽을 수 없습니다. .zip 형식인지 확인해주세요.");
         }
 
+        if (entries == 0) {
+            throw badRequest("압축 파일 안에 사진이 없습니다. 사진 파일을 담아 다시 압축해주세요.");
+        }
+
         return Map.of(
                 "matched", matched,
                 "unmatched", unmatched,
                 "ambiguous", ambiguous,
                 "skipped", skipped);
+    }
+
+    /** 앞 네 바이트로 zip 인지 본다. PK\x03\x04 는 일반, PK\x05\x06 은 빈 압축 파일이다. */
+    private void requireZipSignature(MultipartFile file) {
+        byte[] head = new byte[4];
+        try (java.io.InputStream input = file.getInputStream()) {
+            if (input.readNBytes(head, 0, 4) < 4) {
+                throw badRequest("압축(zip) 파일이 아닙니다. 사진 폴더를 zip 으로 압축해 올려주세요.");
+            }
+        } catch (IOException exception) {
+            throw badRequest("압축 파일을 읽을 수 없습니다. .zip 형식인지 확인해주세요.");
+        }
+        boolean zip = head[0] == 'P' && head[1] == 'K'
+                && (head[2] == 3 || head[2] == 5 || head[2] == 7)
+                && (head[3] == 4 || head[3] == 6 || head[3] == 8);
+        if (!zip) {
+            throw badRequest("압축(zip) 파일이 아닙니다. 사진 폴더를 zip 으로 압축해 올려주세요.");
+        }
     }
 
     /** 학번이 먼저다. 학번으로 못 찾으면 이름으로 찾되, 동명이인은 붙이지 않는다. */
@@ -147,11 +172,7 @@ public class AdminProfileImageBulkController {
         } catch (Exception exception) {
             throw new IllegalStateException("사진 저장에 실패했습니다.", exception);
         }
-        String imageUrl = ServletUriComponentsBuilder.fromCurrentContextPath()
-                .path("/api/v1/profile-images/")
-                .path(fileName)
-                .build()
-                .toUriString();
+        String imageUrl = "/api/v1/profile-images/" + fileName;
         jdbcTemplate.update("""
                 update users set profile_image_url = ?, updated_at = CURRENT_TIMESTAMP where id = ?
                 """, imageUrl, memberId);

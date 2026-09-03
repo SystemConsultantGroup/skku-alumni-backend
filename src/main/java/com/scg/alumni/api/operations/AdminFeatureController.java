@@ -1,5 +1,6 @@
 package com.scg.alumni.api.operations;
 
+import com.scg.alumni.api.common.StoredImageUrl;
 import com.scg.alumni.api.common.CursorPageResponse;
 import com.scg.alumni.api.common.MarkdownImageExtractor;
 import com.scg.alumni.global.security.AdminRoleGuard;
@@ -728,8 +729,9 @@ public class AdminFeatureController {
         Map<String, Object> values = new LinkedHashMap<>();
         values.put("admin_id", AuthContext.currentAdminId());
         values.put("title", request.title().trim());
-        values.put("body", request.body());
-        values.put("thumbnail_url", MarkdownImageExtractor.firstImageUrl(request.body()));
+        String officialBody = StoredImageUrl.toStoredPath(request.body());
+        values.put("body", officialBody);
+        values.put("thumbnail_url", MarkdownImageExtractor.firstImageUrl(officialBody));
         values.put("status", "PUBLISHED");
         values.put("post_kind", postKind);
 
@@ -753,12 +755,13 @@ public class AdminFeatureController {
             @Valid @RequestBody OfficialPostWriteRequest request
     ) {
         String postKind = normalizeRequiredStatus(request.postKind(), "NOTICE", "NEWS");
+        String updatedBody = StoredImageUrl.toStoredPath(request.body());
         int updated = jdbcTemplate.update("""
                 update posts
                 set title = ?, body = ?, thumbnail_url = ?, post_kind = ?, updated_at = CURRENT_TIMESTAMP
                 where id = ? and post_kind in ('NOTICE', 'NEWS')
-                """, request.title().trim(), request.body(),
-                MarkdownImageExtractor.firstImageUrl(request.body()), postKind, id);
+                """, request.title().trim(), updatedBody,
+                MarkdownImageExtractor.firstImageUrl(updatedBody), postKind, id);
         if (updated == 0) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "수정할 공지/뉴스를 찾을 수 없습니다.");
         }

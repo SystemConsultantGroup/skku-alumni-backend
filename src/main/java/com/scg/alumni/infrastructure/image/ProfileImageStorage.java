@@ -16,7 +16,6 @@ import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
-import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
 import static org.springframework.http.HttpStatus.BAD_REQUEST;
 
@@ -64,11 +63,9 @@ public class ProfileImageStorage {
         } catch (Exception exception) {
             throw new IllegalStateException("프로필 사진 저장에 실패했습니다.", exception);
         }
-        return ServletUriComponentsBuilder.fromCurrentContextPath()
-                .path("/api/v1/profile-images/")
-                .path(fileName)
-                .build()
-                .toUriString();
+        // 절대 주소가 아니라 경로를 돌려준다. 절대 주소를 저장하면 사진이
+        // 올릴 때 쓴 호스트에 묶여, 도메인이 바뀌면 통째로 깨진다.
+        return "/api/v1/profile-images/" + fileName;
     }
 
     public void validate(MultipartFile file) {
