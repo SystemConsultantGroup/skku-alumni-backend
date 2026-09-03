@@ -1,5 +1,6 @@
 package com.scg.alumni.api.operations;
 
+import com.scg.alumni.api.common.StoredImageUrl;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -311,7 +312,7 @@ public class AdminMemberRelationController {
                 insert into posts (
                     user_id, title, body, status, post_kind, club_id, industry_id, created_at, updated_at
                 ) values (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                """, memberId, request.title().trim(), request.body(), status, postKind,
+                """, memberId, request.title().trim(), StoredImageUrl.toStoredPath(request.body()), status, postKind,
                 request.clubId(), request.industryId());
         adminAuditLog.record("CREATE_MEMBER_POST", "post", memberId);
         return Map.of("memberId", memberId, "postKind", postKind, "status", status);
@@ -331,7 +332,7 @@ public class AdminMemberRelationController {
                 set title = ?, body = ?, status = ?, post_kind = ?, club_id = ?, industry_id = ?,
                     updated_at = CURRENT_TIMESTAMP
                 where id = ? and user_id = ? and deleted_at is null
-                """, request.title().trim(), request.body(), status, postKind,
+                """, request.title().trim(), StoredImageUrl.toStoredPath(request.body()), status, postKind,
                 request.clubId(), request.industryId(), id, memberId);
         requireUpdated(updated, "게시글을 찾을 수 없습니다.");
         adminAuditLog.record("UPDATE_MEMBER_POST", "post", id);
