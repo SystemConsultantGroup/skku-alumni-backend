@@ -38,9 +38,17 @@ public class AdminHobbyController {
     private final JdbcTemplate jdbcTemplate;
     private final AdminAuditLog adminAuditLog;
 
+    /** 취미 표에서 누를 수 있는 칸. 화면 머리글과 짝이 맞아야 한다. */
+    private static final Map<String, String> HOBBY_SORTS = Map.of(
+            "name", "h.name",
+            "memberCount", "member_count",
+            "createdAt", "h.created_at");
+
     @GetMapping
     public CursorPageResponse<Map<String, Object>> findHobbies(
             @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String sort,
+            @RequestParam(required = false) String order,
             @RequestParam(required = false) Long cursor,
             @RequestParam(required = false) Integer size
     ) {
@@ -55,13 +63,13 @@ public class AdminHobbyController {
                        ) as member_count
                 from hobbies h
                 where h.deleted_at is null
-                  and (? is null or h.id < ?)
                   and (? is null or lower(h.name) like ?)
-                order by h.id desc
-                limit ?
-                """, JdbcResponseMapper.INSTANCE,
-                cursor, cursor, like, like, CursorPageFactory.queryLimit(size));
-        return CursorPageFactory.from(rows, size);
+                %s
+                limit ? offset ?
+                """.formatted(AdminTableSort.orderBy(HOBBY_SORTS, sort, order, "h.id")),
+                JdbcResponseMapper.INSTANCE,
+                like, like, CursorPageFactory.queryLimit(size), AdminTableSort.offset(cursor));
+        return AdminTableSort.page(rows, cursor, size);
     }
 
     @GetMapping("/{id}")

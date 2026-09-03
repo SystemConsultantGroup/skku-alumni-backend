@@ -91,7 +91,7 @@ class AdminCompanyHobbyTest {
     void deletedHobbyLeavesTheListButKeepsItsLinks() {
         adminHobbyController.deleteHobby(1L);
 
-        assertThat(adminHobbyController.findHobbies(null, null, 50).items())
+        assertThat(adminHobbyController.findHobbies(null, null, null, null, 50).items())
                 .extracting(row -> row.get("id"))
                 .doesNotContain(1L);
         assertThat(jdbcTemplate.queryForObject(
@@ -109,7 +109,7 @@ class AdminCompanyHobbyTest {
     }
 
     private int memberCountOf(Long hobbyId) {
-        return adminHobbyController.findHobbies(null, null, 50).items().stream()
+        return adminHobbyController.findHobbies(null, null, null, null, 50).items().stream()
                 .filter(row -> hobbyId.equals(row.get("id")))
                 .map(row -> ((Number) row.get("memberCount")).intValue())
                 .findFirst()

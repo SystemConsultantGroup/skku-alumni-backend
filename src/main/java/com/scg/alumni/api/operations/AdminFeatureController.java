@@ -224,11 +224,25 @@ public class AdminFeatureController {
         return Map.of("id", id, "status", status);
     }
 
+    /** 회비 표에서 누를 수 있는 칸. 화면 머리글과 짝이 맞아야 한다. */
+    private static final Map<String, String> PAYMENT_SORTS = Map.of(
+            "name", AdminTableSort.nullsLast("u.name"),
+            "studentId", AdminTableSort.nullsLast("u.student_id"),
+            "term", "ot.generation, ot.phase",
+            "officerRoleName", "orole.name",
+            "amount", "pr.amount",
+            "status", "pr.status",
+            "paidAt", AdminTableSort.nullsLast("pr.paid_at"));
+
     @GetMapping("/payments")
     public CursorPageResponse<Map<String, Object>> findPayments(
             @RequestParam(required = false) String keyword,
             @RequestParam(required = false) String status,
             @RequestParam(required = false) Long officerTermId,
+            @RequestParam(required = false) Integer generation,
+            @RequestParam(required = false) Integer phase,
+            @RequestParam(required = false) String sort,
+            @RequestParam(required = false) String order,
             @RequestParam(required = false) Long cursor,
             @RequestParam(required = false) Integer size
     ) {
@@ -243,8 +257,7 @@ public class AdminFeatureController {
                 join officer_histories oh on oh.user_id = pr.user_id and oh.officer_term_id = pr.officer_term_id
                     and oh.deleted_at is null
                 join officer_roles orole on orole.id = oh.officer_role_id
-                where (? is null or pr.id < ?)
-                  and (
+                where (
                       ? is null
                       or lower(coalesce(u.name, '')) like ?
                       or lower(coalesce(u.student_id, '')) like ?
@@ -252,14 +265,17 @@ public class AdminFeatureController {
                   )
                   and (? is null or pr.status = ?)
                   and (? is null or pr.officer_term_id = ?)
-                order by pr.id desc
-                limit ?
-                """, JdbcResponseMapper.INSTANCE,
-                cursor, cursor,
+                  and (? is null or ot.generation = ?)
+                  and (? is null or ot.phase = ?)
+                %s
+                limit ? offset ?
+                """.formatted(AdminTableSort.orderBy(PAYMENT_SORTS, sort, order, "pr.id")),
+                JdbcResponseMapper.INSTANCE,
                 normalizedKeyword, normalizedKeyword, normalizedKeyword, normalizedKeyword,
                 normalizedStatus, normalizedStatus, officerTermId, officerTermId,
-                CursorPageFactory.queryLimit(size));
-        return CursorPageFactory.from(rows, size);
+                generation, generation, phase, phase,
+                CursorPageFactory.queryLimit(size), AdminTableSort.offset(cursor));
+        return AdminTableSort.page(rows, cursor, size);
     }
 
     /**
