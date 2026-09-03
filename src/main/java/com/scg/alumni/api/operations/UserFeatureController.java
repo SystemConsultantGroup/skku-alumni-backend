@@ -218,7 +218,7 @@ public class UserFeatureController {
                 currentUserId);
         jdbcTemplate.update("""
                 update users
-                set student_id = null, kingo_id = null, name = null, password = null,
+                set student_id = null, kingo_id = null, login_id = null, name = null, password = null,
                     birth_date = null, gender = null, category = null, degree = null,
                     major_id = null, admission_year = null, graduation_year = null,
                     nationality = null,

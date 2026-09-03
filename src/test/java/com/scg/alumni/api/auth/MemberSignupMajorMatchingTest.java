@@ -74,10 +74,10 @@ class MemberSignupMajorMatchingTest {
                 .hasMessageContaining("일치하는 동문 정보를 찾을 수 없습니다");
     }
 
-    /** 시드 회원은 이미 아이디·비밀번호가 있어 가입이 막힌다. 첫 로그인 상황으로 되돌린다. */
+    /** 시드 회원은 이미 비밀번호가 있다. 아이디·비밀번호를 지워 계정 미등록 상태로 되돌린다. */
     private void prepareFirstLogin(long memberId) {
         jdbcTemplate.update(
-                "update users set kingo_id = null, password = '', status = 'PENDING' where id = ?", memberId);
+                "update users set login_id = null, password = '', status = 'PENDING' where id = ?", memberId);
     }
 
     private String storedMajorOf(long memberId) {
