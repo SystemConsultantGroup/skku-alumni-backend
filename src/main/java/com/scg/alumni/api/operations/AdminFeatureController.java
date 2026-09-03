@@ -1,5 +1,6 @@
 package com.scg.alumni.api.operations;
 
+import com.scg.alumni.api.common.StoredImageUrl;
 import com.scg.alumni.api.common.CursorPageResponse;
 import com.scg.alumni.api.common.MarkdownImageExtractor;
 import com.scg.alumni.global.security.AdminRoleGuard;
@@ -95,6 +96,7 @@ public class AdminFeatureController {
             @RequestParam(required = false) String paymentStatus,
             @RequestParam(required = false) String memberStatus,
             @RequestParam(required = false) Boolean includeDeleted,
+            @RequestParam(required = false) Boolean accountUnregistered,
             @RequestParam(required = false) Long cursor,
             @RequestParam(required = false) Integer size
     ) {
@@ -102,9 +104,15 @@ public class AdminFeatureController {
         String normalizedPaymentStatus = normalizeUpper(paymentStatus);
         String normalizedMemberStatus = normalizeUpper(memberStatus);
         boolean showDeleted = Boolean.TRUE.equals(includeDeleted);
+        // 아이디·비밀번호를 아직 정하지 않은 회원만 모아 보는 자리. 사무처가 엑셀로
+        // 부어 넣은 임원은 승인까지 마쳐도 본인이 앱에서 계정을 만들기 전까지 여기 남는다.
+        boolean onlyUnregistered = Boolean.TRUE.equals(accountUnregistered);
         List<Map<String, Object>> rows = jdbcTemplate.query("""
-                select u.id, u.name, u.kingo_id as user_login_id, u.student_id, u.phone, u.email, u.status,
+                select u.id, u.name, u.login_id as user_login_id, u.kingo_id, u.student_id, u.phone, u.email, u.status,
                        u.deleted_at, u.profile_image_url,
+                       case when u.login_id is not null and u.login_id <> ''
+                                 and u.password is not null and u.password <> ''
+                            then true else false end as account_registered,
                        m.name as major_name, co.name as company_name, u.job_title,
                        ot.generation, ot.phase, orole.name as officer_role_name,
                        coalesce(oh.payment_status, pr.status) as payment_status
@@ -120,6 +128,8 @@ public class AdminFeatureController {
                   and (? is null or lower(u.name) like ? or lower(m.name) like ? or lower(coalesce(co.name, '')) like ?)
                   and (? is null or coalesce(oh.payment_status, pr.status) = ?)
                   and (? is null or u.status = ?)
+                  and (? = false or u.login_id is null or u.login_id = ''
+                       or u.password is null or u.password = '')
                 order by u.id desc
                 limit ?
                 """, JdbcResponseMapper.INSTANCE,
@@ -128,6 +138,7 @@ public class AdminFeatureController {
                 normalizedKeyword, normalizedKeyword, normalizedKeyword, normalizedKeyword,
                 normalizedPaymentStatus, normalizedPaymentStatus,
                 normalizedMemberStatus, normalizedMemberStatus,
+                onlyUnregistered,
                 CursorPageFactory.queryLimit(size));
         return CursorPageFactory.from(rows, size);
     }
@@ -213,11 +224,25 @@ public class AdminFeatureController {
         return Map.of("id", id, "status", status);
     }
 
+    /** 회비 표에서 누를 수 있는 칸. 화면 머리글과 짝이 맞아야 한다. */
+    private static final Map<String, String> PAYMENT_SORTS = Map.of(
+            "name", AdminTableSort.nullsLast("u.name"),
+            "studentId", AdminTableSort.nullsLast("u.student_id"),
+            "term", "ot.generation, ot.phase",
+            "officerRoleName", "orole.name",
+            "amount", "pr.amount",
+            "status", "pr.status",
+            "paidAt", AdminTableSort.nullsLast("pr.paid_at"));
+
     @GetMapping("/payments")
     public CursorPageResponse<Map<String, Object>> findPayments(
             @RequestParam(required = false) String keyword,
             @RequestParam(required = false) String status,
             @RequestParam(required = false) Long officerTermId,
+            @RequestParam(required = false) Integer generation,
+            @RequestParam(required = false) Integer phase,
+            @RequestParam(required = false) String sort,
+            @RequestParam(required = false) String order,
             @RequestParam(required = false) Long cursor,
             @RequestParam(required = false) Integer size
     ) {
@@ -232,8 +257,7 @@ public class AdminFeatureController {
                 join officer_histories oh on oh.user_id = pr.user_id and oh.officer_term_id = pr.officer_term_id
                     and oh.deleted_at is null
                 join officer_roles orole on orole.id = oh.officer_role_id
-                where (? is null or pr.id < ?)
-                  and (
+                where (
                       ? is null
                       or lower(coalesce(u.name, '')) like ?
                       or lower(coalesce(u.student_id, '')) like ?
@@ -241,14 +265,17 @@ public class AdminFeatureController {
                   )
                   and (? is null or pr.status = ?)
                   and (? is null or pr.officer_term_id = ?)
-                order by pr.id desc
-                limit ?
-                """, JdbcResponseMapper.INSTANCE,
-                cursor, cursor,
+                  and (? is null or ot.generation = ?)
+                  and (? is null or ot.phase = ?)
+                %s
+                limit ? offset ?
+                """.formatted(AdminTableSort.orderBy(PAYMENT_SORTS, sort, order, "pr.id")),
+                JdbcResponseMapper.INSTANCE,
                 normalizedKeyword, normalizedKeyword, normalizedKeyword, normalizedKeyword,
                 normalizedStatus, normalizedStatus, officerTermId, officerTermId,
-                CursorPageFactory.queryLimit(size));
-        return CursorPageFactory.from(rows, size);
+                generation, generation, phase, phase,
+                CursorPageFactory.queryLimit(size), AdminTableSort.offset(cursor));
+        return AdminTableSort.page(rows, cursor, size);
     }
 
     /**
@@ -728,8 +755,9 @@ public class AdminFeatureController {
         Map<String, Object> values = new LinkedHashMap<>();
         values.put("admin_id", AuthContext.currentAdminId());
         values.put("title", request.title().trim());
-        values.put("body", request.body());
-        values.put("thumbnail_url", MarkdownImageExtractor.firstImageUrl(request.body()));
+        String officialBody = StoredImageUrl.toStoredPath(request.body());
+        values.put("body", officialBody);
+        values.put("thumbnail_url", MarkdownImageExtractor.firstImageUrl(officialBody));
         values.put("status", "PUBLISHED");
         values.put("post_kind", postKind);
 
@@ -753,12 +781,13 @@ public class AdminFeatureController {
             @Valid @RequestBody OfficialPostWriteRequest request
     ) {
         String postKind = normalizeRequiredStatus(request.postKind(), "NOTICE", "NEWS");
+        String updatedBody = StoredImageUrl.toStoredPath(request.body());
         int updated = jdbcTemplate.update("""
                 update posts
                 set title = ?, body = ?, thumbnail_url = ?, post_kind = ?, updated_at = CURRENT_TIMESTAMP
                 where id = ? and post_kind in ('NOTICE', 'NEWS')
-                """, request.title().trim(), request.body(),
-                MarkdownImageExtractor.firstImageUrl(request.body()), postKind, id);
+                """, request.title().trim(), updatedBody,
+                MarkdownImageExtractor.firstImageUrl(updatedBody), postKind, id);
         if (updated == 0) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "수정할 공지/뉴스를 찾을 수 없습니다.");
         }

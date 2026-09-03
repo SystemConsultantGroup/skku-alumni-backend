@@ -172,6 +172,25 @@ class AdminMemberExcelUploadTest {
     }
 
     /**
+     * 엑셀로는 계정을 만들 수 없다.
+     *
+     * <p>아이디와 비밀번호는 회원이 앱에서 직접 정한다. 킹고아이디는 참고값으로만
+     * 남고, 비밀번호 칸은 비어 있어야 '계정 미등록'으로 잡힌다. 예전처럼 아무도
+     * 모르는 임시 비밀번호를 넣어두면 계정을 만든 회원처럼 보인다.
+     */
+    @Test
+    @Transactional
+    void uploadedMemberHasNoAccountYet() throws Exception {
+        upload(sheetOf(with(row("2020999990", "계정없음", "법학과", "2020"), 2, "skku.none")));
+
+        Map<String, Object> stored = jdbcTemplate.queryForMap(
+                "select kingo_id, login_id, password from users where student_id = '2020999990'");
+        assertThat(stored.get("kingo_id")).isEqualTo("skku.none");
+        assertThat(stored.get("login_id")).isNull();
+        assertThat(stored.get("password")).isEqualTo("");
+    }
+
+    /**
      * 명단에 처음 보는 학과가 섞여 있다고 업로드 전체를 되돌리면, 사무처는 학과를
      * 손으로 등록하고 처음부터 다시 올려야 한다. 회사명처럼 만들고 넘어간다.
      */

@@ -62,7 +62,7 @@ class MemberWithdrawalTest {
         assertThat(response.get("status")).isEqualTo("WITHDRAWN");
         assertThat(userStatus(4L)).isEqualTo("WITHDRAWN");
         Map<String, Object> withdrawnMember = jdbcTemplate.queryForMap("""
-                select student_id, kingo_id, name, password, birth_date, gender, category, degree,
+                select student_id, kingo_id, login_id, name, password, birth_date, gender, category, degree,
                        major_id, admission_year, graduation_year, nationality,
                        home_zipcode, home_address1, home_address2, phone, email,
                        industry_id, company_id, job_title, pr_text,

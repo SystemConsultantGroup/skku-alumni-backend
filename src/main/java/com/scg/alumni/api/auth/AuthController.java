@@ -73,18 +73,22 @@ public class AuthController {
         }
         validateSignupCandidate(candidate, request);
 
+        // 이미 활성인 회원은 그대로 둔다. 회비 확인까지 끝난 계정을 아이디를
+        // 만들었다는 이유로 승인 대기로 되돌리면, 사무처가 승인을 두 번 해야 한다.
+        String status = "ACTIVE".equals(candidate.status()) ? "ACTIVE" : "PENDING";
         jdbcTemplate.update("""
                         update users
-                        set kingo_id = ?,
+                        set login_id = ?,
                             password = ?,
                             phone = coalesce(phone, ?),
-                            status = 'PENDING',
+                            status = ?,
                             updated_at = CURRENT_TIMESTAMP
                         where id = ?
                         """,
-                request.userId().trim(), passwordEncoder.encode(request.password()), request.phone(), candidate.id());
+                request.userId().trim(), passwordEncoder.encode(request.password()), request.phone(),
+                status, candidate.id());
 
-        return new SignupResponse(candidate.id(), candidate.name(), AuthScope.MEMBER, "PENDING");
+        return new SignupResponse(candidate.id(), candidate.name(), AuthScope.MEMBER, status);
     }
 
     @PostMapping("/admin/login")
@@ -200,7 +204,7 @@ public class AuthController {
                         where deleted_at is null
                           and password is not null
                           and password <> ''
-                          and (student_id = ? or kingo_id = ? or email = ?)
+                          and (student_id = ? or login_id = ? or email = ?)
                         order by id
                         limit 1
                         """,
@@ -239,7 +243,7 @@ public class AuthController {
     private SignupCandidate findSignupCandidate(SignupRequest request) {
         List<Long> equivalentMajorIds = equivalentMajorIds(request.majorName());
         return jdbcTemplate.query("""
-                        select u.id, u.name, u.phone, u.email, u.status, u.kingo_id, u.password
+                        select u.id, u.name, u.phone, u.email, u.status, u.login_id, u.password
                         from users u
                         where u.name = ?
                           and u.admission_year = ?
@@ -261,7 +265,7 @@ public class AuthController {
                         resultSet.getString("phone"),
                         resultSet.getString("email"),
                         resultSet.getString("status"),
-                        resultSet.getString("kingo_id"),
+                        resultSet.getString("login_id"),
                         resultSet.getString("password")
                 ),
                 arguments(request.name().trim(), request.admissionYear(),
@@ -344,15 +348,25 @@ public class AuthController {
         return normalizePhone(candidate.phone()).equals(normalizePhone(request.phone()));
     }
 
+    /**
+     * 계정을 만들 수 있는 회원인지 본다.
+     *
+     * <p>활성 회원이라고 막지 않는다. 사무처가 엑셀로 부어 넣고 승인까지 마친
+     * 회원은 아이디도 비밀번호도 없이 활성 상태가 된다. 여기서 막으면 그 회원은
+     * 로그인도 계정 만들기도 못 하는 막다른 골목에 갇힌다.
+     *
+     * <p>가로채기를 막는 것은 상태가 아니라 아이디·비밀번호가 이미 있는지다.
+     * 본인 확인(이름·입학연도·학과·휴대전화)은 위에서 이미 끝났다.
+     */
     private void validateSignupCandidate(SignupCandidate candidate, SignupRequest request) {
-        if ("ACTIVE".equals(candidate.status())) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "이미 활성화된 계정입니다. 로그인해주세요.");
+        if ("WITHDRAWN".equals(candidate.status())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "탈퇴 처리된 계정입니다. 임원 등록을 새로 신청해주세요.");
         }
         if ("REJECTED".equals(candidate.status())) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "가입 승인이 반려된 계정입니다. 사무처에 문의해주세요.");
         }
         if (hasText(candidate.userId()) && hasText(candidate.password())) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "이미 아이디와 비밀번호가 등록된 계정입니다. 회비 확인 후 활성화됩니다.");
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "이미 아이디와 비밀번호가 등록된 계정입니다. 로그인해주세요.");
         }
         if (userIdExists(request.userId(), candidate.id())) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "이미 사용 중인 아이디입니다.");
@@ -363,7 +377,7 @@ public class AuthController {
         Integer count = jdbcTemplate.queryForObject("""
                 select count(*)
                 from users
-                where kingo_id = ?
+                where login_id = ?
                   and id <> ?
                 """, Integer.class, userId.trim(), currentUserId);
         return count != null && count > 0;

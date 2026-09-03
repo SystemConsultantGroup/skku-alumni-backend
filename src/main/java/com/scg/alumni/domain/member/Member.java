@@ -39,8 +39,13 @@ public class Member extends BaseTimeEntity {
     @Column(nullable = true, unique = true)
     private String studentId;
 
+    /** 학교 포털 아이디. 사무처가 명단에 적어 넣는 참고값이고, 로그인에는 쓰지 않는다. */
     @Column(unique = true)
     private String kingoId;
+
+    /** 회원이 직접 정한 로그인 아이디. 비어 있으면 아직 계정을 등록하지 않은 회원이다. */
+    @Column(unique = true)
+    private String loginId;
 
     private String name;
 

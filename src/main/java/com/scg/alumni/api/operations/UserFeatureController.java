@@ -1,5 +1,6 @@
 package com.scg.alumni.api.operations;
 
+import com.scg.alumni.api.common.StoredImageUrl;
 import com.scg.alumni.api.common.CursorPageResponse;
 import com.scg.alumni.domain.academic.MajorNames;
 import com.scg.alumni.api.common.MarkdownImageExtractor;
@@ -125,7 +126,9 @@ public class UserFeatureController {
         logProfileChange("home_address1", current.get("homeAddress1"), request.homeAddress1());
         logProfileChange("home_address2", current.get("homeAddress2"), request.homeAddress2());
         logProfileChange("pr_text", current.get("prText"), request.prText());
-        logProfileChange("company_id", current.get("companyId"), request.companyId());
+        // 회사는 이름으로 남긴다. 숫자 id 를 적어 두면 ASIS 최신화 담당자가
+        // "3 → 10" 만 보게 되어 무엇을 옮겨 적어야 하는지 알 수 없다.
+        logProfileChange("company", companyName(current.get("companyId")), companyName(request.companyId()));
         logProfileChange("job_title", current.get("jobTitle"), request.jobTitle());
 
         return findMe();
@@ -215,7 +218,7 @@ public class UserFeatureController {
                 currentUserId);
         jdbcTemplate.update("""
                 update users
-                set student_id = null, kingo_id = null, name = null, password = null,
+                set student_id = null, kingo_id = null, login_id = null, name = null, password = null,
                     birth_date = null, gender = null, category = null, degree = null,
                     major_id = null, admission_year = null, graduation_year = null,
                     nationality = null,
@@ -848,12 +851,15 @@ public class UserFeatureController {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "회장과 매니저만 공지/뉴스를 작성할 수 있습니다.");
         }
 
+        // 본문에 박힌 이미지 주소를 경로로 되돌린다. 호스트가 섞여 들어오면
+        // 나중에 도메인이 바뀌었을 때 그 글만 사진이 깨진다.
+        String body = StoredImageUrl.toStoredPath(request.body());
         jdbcTemplate.update("""
                 insert into posts (
                     user_id, title, body, thumbnail_url, status, post_kind, club_id, created_at, updated_at
                 ) values (?, ?, ?, ?, 'PUBLISHED', 'CLUB', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                """, currentUserId, request.title().trim(), request.body(),
-                MarkdownImageExtractor.firstImageUrl(request.body()), clubId);
+                """, currentUserId, request.title().trim(), body,
+                MarkdownImageExtractor.firstImageUrl(body), clubId);
 
         Long id = jdbcTemplate.queryForObject("select max(id) from posts", Long.class);
         String clubName = jdbcTemplate.queryForObject("select name from clubs where id = ?", String.class, clubId);
@@ -950,8 +956,9 @@ public class UserFeatureController {
         Map<String, Object> values = new LinkedHashMap<>();
         values.put("user_id", AuthContext.currentMemberId());
         values.put("title", request.title().trim());
-        values.put("body", request.body());
-        values.put("thumbnail_url", MarkdownImageExtractor.firstImageUrl(request.body()));
+        String businessBody = StoredImageUrl.toStoredPath(request.body());
+        values.put("body", businessBody);
+        values.put("thumbnail_url", MarkdownImageExtractor.firstImageUrl(businessBody));
         values.put("status", "PUBLISHED");
         values.put("post_kind", "BUSINESS");
         values.put("industry_id", request.industryId());
@@ -1139,6 +1146,16 @@ public class UserFeatureController {
 
     private Long nullableLong(Object value) {
         return value instanceof Number number ? number.longValue() : null;
+    }
+
+    private String companyName(Object companyId) {
+        Long id = nullableLong(companyId);
+        if (id == null) {
+            return null;
+        }
+        return jdbcTemplate.query("select name from companies where id = ?",
+                        (resultSet, rowNum) -> resultSet.getString(1), id)
+                .stream().findFirst().orElse(null);
     }
 
     private void logProfileChange(String fieldName, Object oldValue, Object newValue) {
