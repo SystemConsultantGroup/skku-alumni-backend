@@ -96,6 +96,7 @@ public class AdminFeatureController {
             @RequestParam(required = false) String paymentStatus,
             @RequestParam(required = false) String memberStatus,
             @RequestParam(required = false) Boolean includeDeleted,
+            @RequestParam(required = false) Boolean accountUnregistered,
             @RequestParam(required = false) Long cursor,
             @RequestParam(required = false) Integer size
     ) {
@@ -103,9 +104,15 @@ public class AdminFeatureController {
         String normalizedPaymentStatus = normalizeUpper(paymentStatus);
         String normalizedMemberStatus = normalizeUpper(memberStatus);
         boolean showDeleted = Boolean.TRUE.equals(includeDeleted);
+        // 아이디·비밀번호를 아직 정하지 않은 회원만 모아 보는 자리. 사무처가 엑셀로
+        // 부어 넣은 임원은 승인까지 마쳐도 본인이 앱에서 계정을 만들기 전까지 여기 남는다.
+        boolean onlyUnregistered = Boolean.TRUE.equals(accountUnregistered);
         List<Map<String, Object>> rows = jdbcTemplate.query("""
-                select u.id, u.name, u.kingo_id as user_login_id, u.student_id, u.phone, u.email, u.status,
+                select u.id, u.name, u.login_id as user_login_id, u.kingo_id, u.student_id, u.phone, u.email, u.status,
                        u.deleted_at, u.profile_image_url,
+                       case when u.login_id is not null and u.login_id <> ''
+                                 and u.password is not null and u.password <> ''
+                            then true else false end as account_registered,
                        m.name as major_name, co.name as company_name, u.job_title,
                        ot.generation, ot.phase, orole.name as officer_role_name,
                        coalesce(oh.payment_status, pr.status) as payment_status
@@ -121,6 +128,8 @@ public class AdminFeatureController {
                   and (? is null or lower(u.name) like ? or lower(m.name) like ? or lower(coalesce(co.name, '')) like ?)
                   and (? is null or coalesce(oh.payment_status, pr.status) = ?)
                   and (? is null or u.status = ?)
+                  and (? = false or u.login_id is null or u.login_id = ''
+                       or u.password is null or u.password = '')
                 order by u.id desc
                 limit ?
                 """, JdbcResponseMapper.INSTANCE,
@@ -129,6 +138,7 @@ public class AdminFeatureController {
                 normalizedKeyword, normalizedKeyword, normalizedKeyword, normalizedKeyword,
                 normalizedPaymentStatus, normalizedPaymentStatus,
                 normalizedMemberStatus, normalizedMemberStatus,
+                onlyUnregistered,
                 CursorPageFactory.queryLimit(size));
         return CursorPageFactory.from(rows, size);
     }

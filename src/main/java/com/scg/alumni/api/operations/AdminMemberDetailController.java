@@ -181,7 +181,7 @@ public class AdminMemberDetailController {
 
     private Map<String, Object> findProfile(Long memberId) {
         return jdbcTemplate.query("""
-                select u.id, u.name, u.student_id, u.kingo_id, u.birth_date, u.gender, u.category, u.degree,
+                select u.id, u.name, u.student_id, u.kingo_id, u.login_id, u.birth_date, u.gender, u.category, u.degree,
                        u.major_id, u.admission_year, u.graduation_year, u.nationality,
                        u.home_zipcode, u.home_address1, u.home_address2,
                        u.work_zipcode, u.work_address1, u.work_address2,

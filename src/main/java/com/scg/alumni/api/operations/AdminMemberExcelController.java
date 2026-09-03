@@ -6,7 +6,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import com.scg.alumni.domain.academic.MajorNames;
 import com.scg.alumni.infrastructure.minio.MinioProperties;
@@ -31,7 +30,6 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
-import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -102,7 +100,6 @@ public class AdminMemberExcelController {
     private static final short PHOTO_ROW_HEIGHT_POINTS = 90;
 
     private final JdbcTemplate jdbcTemplate;
-    private final PasswordEncoder passwordEncoder;
     private final MinioClient minioClient;
     private final MinioProperties minioProperties;
     private final OfficerAssignment officerAssignment;
@@ -157,7 +154,7 @@ public class AdminMemberExcelController {
                     {"빈 칸", "비워두면 그 항목은 건드리지 않습니다. 기존 회원의 값이 지워지지 않으니, 고칠 항목만 채워 올려도 됩니다. 반대로 엑셀로 값을 지울 수는 없습니다 — 지우는 일은 회원 상세 화면에서 합니다."},
                     {"학번", "필수 · 중복 기준 · 기존 학번이면 그 회원의 정보를 수정합니다. (예: 2020123456)"},
                     {"이름", "필수"},
-                    {"킹고아이디", "선택 · 앱 로그인 아이디입니다. 회원마다 달라야 하며, 다른 회원이 쓰고 있으면 해당 행 번호와 함께 오류가 납니다."},
+                    {"킹고아이디", "선택 · 학교 포털 아이디를 적어두는 참고 칸입니다. 앱 로그인 아이디가 아닙니다 — 아이디와 비밀번호는 회원이 앱에서 직접 정합니다. 회원마다 달라야 하며, 다른 회원이 쓰고 있으면 해당 행 번호와 함께 오류가 납니다."},
                     {"학과", "필수 · '학과 목록' 시트에 있는 명칭을 그대로 입력합니다. 목록에 없는 학과는 새로 등록되며, 어떤 학과가 등록됐는지 업로드 뒤에 알려드립니다. 오타도 그대로 등록되니 확인해주세요."},
                     {"입학연도", "필수 · 1900~2100 사이의 4자리 숫자 (예: 2020)"},
                     {"졸업연도", "선택 · 1900~2100 사이의 4자리 숫자 (예: 2024)"},
@@ -173,7 +170,8 @@ public class AdminMemberExcelController {
                     {"사진", "사진은 엑셀에 넣지 않습니다. 파일명을 학번 또는 이름으로 저장한 사진들을 zip으로 묶어 '사진 일괄 등록'으로 올립니다. (예: 2020123456.jpg)"},
                     {"공개 범위·알림", "연락처 공개 여부와 알림 설정은 엑셀로 올리지 않습니다. 회원이 앱에서 직접 정하는 값이라 일괄로 바꾸지 않습니다."},
                     {"제한", "첫 번째 시트 기준 최대 5,000명, 파일 크기 10MB 이하"},
-                    {"참고", "새로 등록되는 회원은 모두 가입 대기 상태로 들어옵니다. 승인은 회원 관리에서 하며, 이미 승인된 회원의 상태는 바뀌지 않습니다."}
+                    {"참고", "새로 등록되는 회원은 모두 가입 대기 상태로 들어옵니다. 승인은 회원 관리에서 하며, 이미 승인된 회원의 상태는 바뀌지 않습니다."},
+                    {"계정", "엑셀로는 아이디와 비밀번호를 만들 수 없습니다. 회원이 앱의 '계정 만들기'에서 본인 확인 후 직접 정합니다. 아직 정하지 않은 회원은 회원 관리의 '계정 미등록'에서 모아볼 수 있습니다."}
             };
             for (int rowIndex = 0; rowIndex < guideRows.length; rowIndex++) {
                 Row row = guide.createRow(rowIndex);
@@ -365,7 +363,6 @@ public class AdminMemberExcelController {
         int updated = 0;
         Map<String, Long> majorIds = loadMajorIds();
         List<String> createdMajors = new java.util.ArrayList<>();
-        String temporaryPassword = passwordEncoder.encode(UUID.randomUUID().toString());
         DataFormatter formatter = new DataFormatter(Locale.KOREA);
         try (XSSFWorkbook workbook = new XSSFWorkbook(file.getInputStream())) {
             Sheet sheet = workbook.getNumberOfSheets() == 0 ? null : workbook.getSheetAt(0);
@@ -422,9 +419,9 @@ public class AdminMemberExcelController {
                                     admission_year, graduation_year, birth_date, gender, phone, email,
                                     company_id, job_title, home_zipcode, home_address1, home_address2,
                                     status, created_at, updated_at)
-                                values (?, ?, ?, ?, 'UNDERGRADUATE', 'BACHELOR', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                                values (?, ?, ?, '', 'UNDERGRADUATE', 'BACHELOR', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                                     'PENDING', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                                """, studentId, name, kingoId, temporaryPassword, majorId, admissionYear,
+                                """, studentId, name, kingoId, majorId, admissionYear,
                                 graduationYear, birthDate, gender, phone, email, companyId, jobTitle,
                                 nullable(row, HOME_ZIPCODE, formatter), nullable(row, HOME_ADDRESS1, formatter),
                                 nullable(row, HOME_ADDRESS2, formatter));
