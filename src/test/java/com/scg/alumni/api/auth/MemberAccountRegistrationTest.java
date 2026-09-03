@@ -8,6 +8,7 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
@@ -21,6 +22,7 @@ import org.springframework.transaction.annotation.Transactional;
  * 그 회원은 아이디를 고를 기회를 잃었다.
  */
 @SpringBootTest
+@Import(com.scg.alumni.support.RedislessTestConfig.class)
 class MemberAccountRegistrationTest {
 
     @Autowired
