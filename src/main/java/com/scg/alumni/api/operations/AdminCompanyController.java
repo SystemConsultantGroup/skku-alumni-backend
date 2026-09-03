@@ -38,10 +38,20 @@ public class AdminCompanyController {
     private final JdbcTemplate jdbcTemplate;
     private final AdminAuditLog adminAuditLog;
 
+    /** 직장 표에서 누를 수 있는 칸. 화면 머리글과 짝이 맞아야 한다. */
+    private static final Map<String, String> COMPANY_SORTS = Map.of(
+            "name", "c.name",
+            "industryName", AdminTableSort.nullsLast("i.name"),
+            "address", AdminTableSort.nullsLast("c.work_address1"),
+            "memberCount", "member_count",
+            "createdAt", "c.created_at");
+
     @GetMapping
     public CursorPageResponse<Map<String, Object>> findCompanies(
             @RequestParam(required = false) String keyword,
             @RequestParam(required = false) Long industryId,
+            @RequestParam(required = false) String sort,
+            @RequestParam(required = false) String order,
             @RequestParam(required = false) Long cursor,
             @RequestParam(required = false) Integer size
     ) {
@@ -56,15 +66,15 @@ public class AdminCompanyController {
                 from companies c
                 left join industries i on i.id = c.industry_id
                 where c.deleted_at is null
-                  and (? is null or c.id < ?)
                   and (? is null or lower(c.name) like ? or lower(coalesce(c.work_address1, '')) like ?)
                   and (? is null or c.industry_id = ?)
-                order by c.id desc
-                limit ?
-                """, JdbcResponseMapper.INSTANCE,
-                cursor, cursor, like, like, like, industryId, industryId,
-                CursorPageFactory.queryLimit(size));
-        return CursorPageFactory.from(rows, size);
+                %s
+                limit ? offset ?
+                """.formatted(AdminTableSort.orderBy(COMPANY_SORTS, sort, order, "c.id")),
+                JdbcResponseMapper.INSTANCE,
+                like, like, like, industryId, industryId,
+                CursorPageFactory.queryLimit(size), AdminTableSort.offset(cursor));
+        return AdminTableSort.page(rows, cursor, size);
     }
 
     @GetMapping("/{id}")
