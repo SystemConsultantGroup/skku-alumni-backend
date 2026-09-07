@@ -1003,10 +1003,39 @@ public class UserFeatureController {
         return Map.of("id", id.longValue());
     }
 
+    /**
+     * 게시글을 신고한다.
+     *
+     * <p>같은 글에 대한 내 신고는 하나만 남는다. 신고 건수는 사무처가 어느 글부터
+     * 볼지 정하는 근거인데, 한 사람이 버튼을 여러 번 눌러 부풀릴 수 있으면 그
+     * 숫자가 뜻을 잃는다. 이미 접수된 신고가 있으면 그대로 돌려준다.
+     */
     @PostMapping("/reports")
     @Transactional
     public Map<String, Object> createReport(@Valid @RequestBody ReportCreateRequest request) {
         Long currentUserId = AuthContext.currentMemberId();
+
+        // 볼 수 없는 글은 신고할 수도 없다. 없는 글 번호는 외래키가 막아 "일시적인
+        // 오류가 발생했습니다" 로 보였는데, 다시 시도해도 영영 되지 않는 오류다.
+        // 이미 내려간 글에 대한 신고가 대기열에 쌓이는 것도 막는다.
+        Integer readable = jdbcTemplate.queryForObject("""
+                select count(*) from posts
+                where id = ? and deleted_at is null and status = 'PUBLISHED'
+                """, Integer.class, request.targetPostId());
+        if (readable == null || readable == 0) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "신고할 게시글을 찾을 수 없습니다.");
+        }
+
+        List<Long> alreadyReported = jdbcTemplate.queryForList("""
+                select id from reports
+                where reporter_id = ? and target_post_id = ?
+                  and status = 'PENDING' and deleted_at is null
+                order by id
+                """, Long.class, currentUserId, request.targetPostId());
+        if (!alreadyReported.isEmpty()) {
+            return Map.of("id", alreadyReported.get(0), "status", "PENDING", "alreadyReported", true);
+        }
+
         jdbcTemplate.update("""
                 insert into reports (
                     reporter_id, target_type, target_post_id, reason, reason_others, status, created_at, updated_at
@@ -1015,7 +1044,7 @@ public class UserFeatureController {
                 request.reasonOthers());
 
         Long id = jdbcTemplate.queryForObject("select max(id) from reports", Long.class);
-        return Map.of("id", id, "status", "PENDING");
+        return Map.of("id", id, "status", "PENDING", "alreadyReported", false);
     }
 
     @GetMapping("/blocked-users")
