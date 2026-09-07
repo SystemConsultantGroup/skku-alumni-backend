@@ -43,6 +43,7 @@ import org.springframework.web.server.ResponseStatusException;
 public class AdminMemberRelationController {
 
     private final JdbcTemplate jdbcTemplate;
+    private final ClubLeadership clubLeadership;
     private final AdminAuditLog adminAuditLog;
 
     // 취미 -----------------------------------------------------------------
@@ -143,6 +144,10 @@ public class AdminMemberRelationController {
                     values (?, ?, ?, CURRENT_TIMESTAMP)
                     """, request.clubId(), memberId, clubRole);
         }
+        // club_members 의 역할은 사본이다. 회장·매니저는 clubs 의 칸이 정하므로
+        // 그쪽까지 옮겨 적지 않으면, 화면에는 '회장' 이라고 적히는데 관리 버튼은
+        // 없고 동호회 목록에는 옛 회장이 그대로 남는다.
+        clubLeadership.assign(request.clubId(), memberId, clubRole);
         adminAuditLog.record("ADD_CLUB_MEMBERSHIP", "club_member", memberId);
         return Map.of("memberId", memberId, "clubId", request.clubId(), "clubRole", clubRole);
     }
@@ -161,6 +166,14 @@ public class AdminMemberRelationController {
                 where id = ? and user_id = ? and deleted_at is null
                 """, clubRole, request.leftAt(), id, memberId);
         requireUpdated(updated, "동호회 가입 정보를 찾을 수 없습니다.");
+        Long clubId = jdbcTemplate.queryForObject(
+                "select club_id from club_members where id = ?", Long.class, id);
+        // 탈퇴 날짜를 적었다면 그 자리에서도 물러난다.
+        if (request.leftAt() != null) {
+            clubLeadership.resign(clubId, memberId);
+        } else {
+            clubLeadership.assign(clubId, memberId, clubRole);
+        }
         adminAuditLog.record("UPDATE_CLUB_MEMBERSHIP", "club_member", id);
         return Map.of("id", id, "clubRole", clubRole);
     }
@@ -168,7 +181,16 @@ public class AdminMemberRelationController {
     @DeleteMapping("/club-memberships/{id}")
     @Transactional
     public Map<String, Object> removeClubMembership(@PathVariable Long memberId, @PathVariable Long id) {
+        Long clubId = jdbcTemplate.query(
+                "select club_id from club_members where id = ? and user_id = ? and deleted_at is null",
+                (resultSet, rowNum) -> resultSet.getLong("club_id"), id, memberId)
+                .stream().findFirst().orElse(null);
         softDelete("club_members", "user_id", memberId, id, "REMOVE_CLUB_MEMBERSHIP", "club_member");
+        // 동호회에서 빼면 맡고 있던 자리도 함께 비운다. 그러지 않으면 회원이
+        // 아닌 사람이 회장으로 남아 아무도 가입 신청을 처리할 수 없게 된다.
+        if (clubId != null) {
+            clubLeadership.resign(clubId, memberId);
+        }
         return Map.of("id", id, "deleted", true);
     }
 
@@ -287,10 +309,26 @@ public class AdminMemberRelationController {
         return Map.of("id", id, "status", status);
     }
 
+    /**
+     * 회비 내역을 지운다.
+     *
+     * <p>임원 이력의 납부 상태까지 함께 되돌린다. 주소록은 회비 레코드가 아니라
+     * {@code officer_histories.payment_status} 로 노출을 판단하기 때문이다. 지우고도
+     * 이력이 PAID 로 남으면, 회비 화면에는 아무 기록이 없는 사람이 주소록에는
+     * 납부자로 계속 걸려 있는다. 등록·수정 경로는 이미 둘을 함께 고치고 있었고
+     * 삭제만 빠져 있었다.
+     */
     @DeleteMapping("/payments/{id}")
     @Transactional
     public Map<String, Object> removePayment(@PathVariable Long memberId, @PathVariable Long id) {
+        Long officerTermId = jdbcTemplate.query(
+                "select officer_term_id from payment_records where id = ? and user_id = ? and deleted_at is null",
+                (resultSet, rowNum) -> resultSet.getLong("officer_term_id"), id, memberId)
+                .stream()
+                .findFirst()
+                .orElse(null);
         softDelete("payment_records", "user_id", memberId, id, "REMOVE_PAYMENT_RECORD", "payment_record");
+        syncOfficerPaymentStatus(memberId, officerTermId, "UNPAID");
         return Map.of("id", id, "deleted", true);
     }
 

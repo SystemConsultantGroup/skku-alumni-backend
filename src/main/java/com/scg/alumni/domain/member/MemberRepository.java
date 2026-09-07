@@ -52,7 +52,7 @@ public interface MemberRepository extends JpaRepository<Member, Long> {
                   or (:searchType = 'role' and exists (select roleHistory.id from OfficerHistory roleHistory where roleHistory.member = m and roleHistory.deletedAt is null and roleHistory.paymentStatus = :paymentStatus and roleHistory.officerTerm.startedAt <= :today and roleHistory.officerTerm.endedAt >= :graceFloor and replace(lower(roleHistory.officerRole.name), ' ', '') like :keyword))
                   or (:searchType = 'region' and (replace(lower(concat(coalesce(m.workAddress1, ''), coalesce(m.workAddress2, ''))), ' ', '') like :keyword or (m.homeAddressPublic = true and replace(lower(concat(coalesce(m.homeAddress1, ''), coalesce(m.homeAddress2, ''))), ' ', '') like :keyword)))
               )
-              and (:majorId is null or m.major.id = :majorId or displayMajor.id = :majorId)
+              and (:majorIds is null or m.major.id in :majorIds)
               and (:industryId is null or industry.id = :industryId)
               and (:admissionYear is null or m.admissionYear = :admissionYear)
               and (
@@ -78,7 +78,7 @@ public interface MemberRepository extends JpaRepository<Member, Long> {
             @Param("searchType") String searchType,
             @Param("admissionYearKeyword") String admissionYearKeyword,
             @Param("studentIdKeyword") String studentIdKeyword,
-            @Param("majorId") Long majorId,
+            @Param("majorIds") List<Long> majorIds,
             @Param("industryId") Long industryId,
             @Param("admissionYear") Integer admissionYear,
             @Param("officerTermId") Long officerTermId,
@@ -93,5 +93,37 @@ public interface MemberRepository extends JpaRepository<Member, Long> {
             @Param("today") java.time.LocalDate today,
             @Param("graceFloor") java.time.LocalDate graceFloor,
             Pageable pageable
+    );
+
+    /**
+     * 지금 주소록에 보이는 임원 수.
+     *
+     * <p>검색 조건 없이 {@code searchCurrentPaidDirectory} 와 같은 뼈대만 센다 —
+     * 활성 회원, 현행 임기 납부, 내가 차단하지 않은 사람. 홈 화면이 "현행 임기
+     * 납부자 기준" 이라고 적어 두고 목록 한 페이지 크기를 인원수처럼 보여주던
+     * 자리를 실제 수로 바꾸기 위한 것이다.
+     */
+    @Query("""
+            select count(m)
+            from Member m
+            where m.status = :memberStatus
+              and m.deletedAt is null
+              and m.id not in :blockedMemberIds
+              and exists (
+                  select h.id
+                  from OfficerHistory h
+                  join h.officerTerm term
+                  where h.member = m
+                    and h.deletedAt is null
+                    and h.paymentStatus = :paymentStatus
+                    and term.startedAt <= :today and term.endedAt >= :graceFloor
+              )
+            """)
+    long countCurrentPaidDirectory(
+            @Param("blockedMemberIds") List<Long> blockedMemberIds,
+            @Param("memberStatus") MemberStatus memberStatus,
+            @Param("paymentStatus") OfficerPaymentStatus paymentStatus,
+            @Param("today") java.time.LocalDate today,
+            @Param("graceFloor") java.time.LocalDate graceFloor
     );
 }

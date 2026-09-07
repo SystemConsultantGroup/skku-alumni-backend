@@ -14,6 +14,15 @@ public class MemberDirectoryController {
 
     private final MemberDirectoryService memberDirectoryService;
 
+    /** 홈 화면이 "현재 이용 가능 임원" 으로 내보이는 수. */
+    @GetMapping("/count")
+    public MemberCountResponse count() {
+        return new MemberCountResponse(memberDirectoryService.countVisibleOfficers());
+    }
+
+    public record MemberCountResponse(long count) {
+    }
+
     @GetMapping
     public CursorPageResponse<MemberSummaryResponse> search(
             @RequestParam(required = false) String keyword,
