@@ -13,6 +13,7 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import java.net.URI;
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -444,13 +445,25 @@ public class UserFeatureController {
         return Map.of("id", id, "status", "PENDING");
     }
 
+    /**
+     * 내 회비 내역.
+     *
+     * <p>{@code current} 는 "가장 최근 기수" 가 아니라 지금 진행 중인 임기여야 한다.
+     * 목록의 첫 줄을 그대로 쓰면, 현행 임기 레코드가 아직 없거나 지워진 사람에게
+     * 끝난 임기의 납부 상태를 현재처럼 보여준다 — 회비를 안 낸 사람이 홈에서
+     * "납부" 를 읽게 된다. 임기 판정은 주소록 노출과 같은 규칙(시작일이 지났고
+     * 종료일이 유예 기간 안)을 쓴다.
+     */
     @GetMapping("/payments/me")
     public Map<String, Object> findMyPayment() {
         Long currentUserId = AuthContext.currentMemberId();
+        LocalDate today = LocalDate.now(ZoneId.of("Asia/Seoul"));
+        LocalDate graceFloor = today.minusDays(OfficerTerm.GRACE_DAYS);
         List<Map<String, Object>> payments = jdbcTemplate.query("""
                 select pr.id, pr.amount, pr.status, pr.paid_at,
                        ot.generation, ot.phase, ot.started_at, ot.ended_at,
-                       orole.name as officer_role_name
+                       orole.name as officer_role_name,
+                       (ot.started_at <= ? and ot.ended_at >= ?) as current_term
                 from payment_records pr
                 join officer_terms ot on ot.id = pr.officer_term_id
                 join officer_histories oh on oh.user_id = pr.user_id and oh.officer_term_id = pr.officer_term_id
@@ -458,12 +471,26 @@ public class UserFeatureController {
                 join officer_roles orole on orole.id = oh.officer_role_id
                 where pr.user_id = ? and pr.deleted_at is null
                 order by ot.generation desc, ot.phase desc
-                """, JdbcResponseMapper.INSTANCE, currentUserId);
+                """, JdbcResponseMapper.INSTANCE, today, graceFloor, currentUserId);
+
+        // MySQL 은 비교 결과를 0/1 정수로 돌려준다. 그대로 두면 화면에서 숫자가
+        // 참·거짓처럼 쓰이므로 여기서 boolean 으로 바꿔 내보낸다.
+        payments.forEach(payment -> payment.put("currentTerm", isTrue(payment.get("currentTerm"))));
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("items", payments);
-        response.put("current", payments.isEmpty() ? null : payments.get(0));
+        response.put("current", payments.stream()
+                .filter(payment -> Boolean.TRUE.equals(payment.get("currentTerm")))
+                .findFirst()
+                .orElse(null));
         return response;
+    }
+
+    private boolean isTrue(Object value) {
+        if (value instanceof Boolean flag) {
+            return flag;
+        }
+        return value instanceof Number number && number.intValue() != 0;
     }
 
     @GetMapping("/clubs")
