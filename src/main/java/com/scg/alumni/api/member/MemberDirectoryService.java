@@ -45,12 +45,7 @@ public class MemberDirectoryService {
     ) {
         LocalDate today = LocalDate.now(ZoneId.of("Asia/Seoul"));
         int pageSize = normalizeSize(size);
-        Long currentUserId = AuthContext.currentMemberIdOrNull();
-        List<Long> blockedMemberIds = currentUserId == null ? List.of(-1L) : jdbcTemplate.queryForList(
-                "select blocked_id from user_blocks where blocker_id = ? and deleted_at is null", Long.class, currentUserId);
-        if (blockedMemberIds.isEmpty()) {
-            blockedMemberIds = List.of(-1L);
-        }
+        List<Long> blockedMemberIds = blockedMemberIds();
         String normalizedSearchType = normalizeSearchType(searchType);
         AdmissionSearch admissionSearch = normalizeAdmissionSearch(keyword, normalizedSearchType);
         List<Member> fetchedMembers = memberRepository.searchCurrentPaidDirectory(
@@ -83,6 +78,33 @@ public class MemberDirectoryService {
         Long nextCursor = hasNext && !items.isEmpty() ? items.get(items.size() - 1).id() : null;
 
         return new CursorPageResponse<>(items, nextCursor, hasNext);
+    }
+
+    /**
+     * 지금 주소록에 보이는 임원 수.
+     *
+     * <p>목록을 한 페이지 받아 그 길이를 세면 늘 페이지 크기가 나온다. 홈 화면이
+     * 인원수로 내보이는 자리라 실제 수를 따로 센다.
+     */
+    public long countVisibleOfficers() {
+        LocalDate today = LocalDate.now(ZoneId.of("Asia/Seoul"));
+        return memberRepository.countCurrentPaidDirectory(
+                blockedMemberIds(),
+                MemberStatus.ACTIVE,
+                OfficerPaymentStatus.PAID,
+                today,
+                today.minusDays(OfficerTerm.GRACE_DAYS));
+    }
+
+    /** 내가 차단한 사람들. 비어 있으면 {@code not in ()} 이 문법 오류라 없는 id 를 넣는다. */
+    private List<Long> blockedMemberIds() {
+        Long currentUserId = AuthContext.currentMemberIdOrNull();
+        if (currentUserId == null) {
+            return List.of(-1L);
+        }
+        List<Long> blocked = jdbcTemplate.queryForList(
+                "select blocked_id from user_blocks where blocker_id = ? and deleted_at is null", Long.class, currentUserId);
+        return blocked.isEmpty() ? List.of(-1L) : blocked;
     }
 
     private int normalizeSize(Integer size) {
