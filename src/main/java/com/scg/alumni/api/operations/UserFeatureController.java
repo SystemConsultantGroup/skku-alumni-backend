@@ -13,6 +13,7 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import java.net.URI;
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -44,6 +45,7 @@ public class UserFeatureController {
 
     private final JdbcTemplate jdbcTemplate;
     private final PushNotificationService pushNotificationService;
+    private final ClubLeadership clubLeadership;
 
     @GetMapping("/me")
     public Map<String, Object> findMe() {
@@ -444,13 +446,25 @@ public class UserFeatureController {
         return Map.of("id", id, "status", "PENDING");
     }
 
+    /**
+     * 내 회비 내역.
+     *
+     * <p>{@code current} 는 "가장 최근 기수" 가 아니라 지금 진행 중인 임기여야 한다.
+     * 목록의 첫 줄을 그대로 쓰면, 현행 임기 레코드가 아직 없거나 지워진 사람에게
+     * 끝난 임기의 납부 상태를 현재처럼 보여준다 — 회비를 안 낸 사람이 홈에서
+     * "납부" 를 읽게 된다. 임기 판정은 주소록 노출과 같은 규칙(시작일이 지났고
+     * 종료일이 유예 기간 안)을 쓴다.
+     */
     @GetMapping("/payments/me")
     public Map<String, Object> findMyPayment() {
         Long currentUserId = AuthContext.currentMemberId();
+        LocalDate today = LocalDate.now(ZoneId.of("Asia/Seoul"));
+        LocalDate graceFloor = today.minusDays(OfficerTerm.GRACE_DAYS);
         List<Map<String, Object>> payments = jdbcTemplate.query("""
                 select pr.id, pr.amount, pr.status, pr.paid_at,
                        ot.generation, ot.phase, ot.started_at, ot.ended_at,
-                       orole.name as officer_role_name
+                       orole.name as officer_role_name,
+                       (ot.started_at <= ? and ot.ended_at >= ?) as current_term
                 from payment_records pr
                 join officer_terms ot on ot.id = pr.officer_term_id
                 join officer_histories oh on oh.user_id = pr.user_id and oh.officer_term_id = pr.officer_term_id
@@ -458,12 +472,26 @@ public class UserFeatureController {
                 join officer_roles orole on orole.id = oh.officer_role_id
                 where pr.user_id = ? and pr.deleted_at is null
                 order by ot.generation desc, ot.phase desc
-                """, JdbcResponseMapper.INSTANCE, currentUserId);
+                """, JdbcResponseMapper.INSTANCE, today, graceFloor, currentUserId);
+
+        // MySQL 은 비교 결과를 0/1 정수로 돌려준다. 그대로 두면 화면에서 숫자가
+        // 참·거짓처럼 쓰이므로 여기서 boolean 으로 바꿔 내보낸다.
+        payments.forEach(payment -> payment.put("currentTerm", isTrue(payment.get("currentTerm"))));
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("items", payments);
-        response.put("current", payments.isEmpty() ? null : payments.get(0));
+        response.put("current", payments.stream()
+                .filter(payment -> Boolean.TRUE.equals(payment.get("currentTerm")))
+                .findFirst()
+                .orElse(null));
         return response;
+    }
+
+    private boolean isTrue(Object value) {
+        if (value instanceof Boolean flag) {
+            return flag;
+        }
+        return value instanceof Number number && number.intValue() != 0;
     }
 
     @GetMapping("/clubs")
@@ -799,7 +827,7 @@ public class UserFeatureController {
         String column = requestedRole.equals("PRESIDENT") ? "president_user_id" : "manager_user_id";
         jdbcTemplate.update("update clubs set " + column + " = ?, updated_at = CURRENT_TIMESTAMP where id = ?",
                 request.userId(), clubId);
-        synchronizeClubRoles(clubId);
+        clubLeadership.synchronizeRoles(clubId);
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("role", requestedRole);
         response.put("userId", request.userId());
@@ -963,17 +991,51 @@ public class UserFeatureController {
         values.put("post_kind", "BUSINESS");
         values.put("industry_id", request.industryId());
 
+        // 넣을 컬럼을 명시하지 않으면 SimpleJdbcInsert 가 posts 의 모든 컬럼을 대상으로
+        // 삼아 값이 없는 자리에 NULL 을 보낸다. created_at 은 NOT NULL 이고 기본값은
+        // 컬럼을 생략했을 때만 적용되므로, 그대로 두면 비즈니스 글쓰기가 항상 실패한다.
+        // 공지 작성에서 같은 이유로 이미 겪은 문제다.
         Number id = new SimpleJdbcInsert(jdbcTemplate)
                 .withTableName("posts")
+                .usingColumns(values.keySet().toArray(String[]::new))
                 .usingGeneratedKeyColumns("id")
                 .executeAndReturnKey(values);
         return Map.of("id", id.longValue());
     }
 
+    /**
+     * 게시글을 신고한다.
+     *
+     * <p>같은 글에 대한 내 신고는 하나만 남는다. 신고 건수는 사무처가 어느 글부터
+     * 볼지 정하는 근거인데, 한 사람이 버튼을 여러 번 눌러 부풀릴 수 있으면 그
+     * 숫자가 뜻을 잃는다. 이미 접수된 신고가 있으면 그대로 돌려준다.
+     */
     @PostMapping("/reports")
     @Transactional
     public Map<String, Object> createReport(@Valid @RequestBody ReportCreateRequest request) {
         Long currentUserId = AuthContext.currentMemberId();
+
+        // 볼 수 없는 글은 신고할 수도 없다. 없는 글 번호는 외래키가 막아 "일시적인
+        // 오류가 발생했습니다" 로 보였는데, 다시 시도해도 영영 되지 않는 오류다.
+        // 이미 내려간 글에 대한 신고가 대기열에 쌓이는 것도 막는다.
+        Integer readable = jdbcTemplate.queryForObject("""
+                select count(*) from posts
+                where id = ? and deleted_at is null and status = 'PUBLISHED'
+                """, Integer.class, request.targetPostId());
+        if (readable == null || readable == 0) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "신고할 게시글을 찾을 수 없습니다.");
+        }
+
+        List<Long> alreadyReported = jdbcTemplate.queryForList("""
+                select id from reports
+                where reporter_id = ? and target_post_id = ?
+                  and status = 'PENDING' and deleted_at is null
+                order by id
+                """, Long.class, currentUserId, request.targetPostId());
+        if (!alreadyReported.isEmpty()) {
+            return Map.of("id", alreadyReported.get(0), "status", "PENDING", "alreadyReported", true);
+        }
+
         jdbcTemplate.update("""
                 insert into reports (
                     reporter_id, target_type, target_post_id, reason, reason_others, status, created_at, updated_at
@@ -982,7 +1044,7 @@ public class UserFeatureController {
                 request.reasonOthers());
 
         Long id = jdbcTemplate.queryForObject("select max(id) from reports", Long.class);
-        return Map.of("id", id, "status", "PENDING");
+        return Map.of("id", id, "status", "PENDING", "alreadyReported", false);
     }
 
     @GetMapping("/blocked-users")
@@ -1122,26 +1184,6 @@ public class UserFeatureController {
                 where c.id = ?
                 """, String.class, userId, userId, userId, clubId);
         return roles.isEmpty() ? "" : roles.get(0);
-    }
-
-    private void synchronizeClubRoles(Long clubId) {
-        jdbcTemplate.update("""
-                update club_members
-                set club_role = 'MEMBER'
-                where club_id = ? and left_at is null
-                """, clubId);
-        jdbcTemplate.update("""
-                update club_members
-                set club_role = 'PRESIDENT'
-                where club_id = ? and left_at is null
-                  and user_id = (select president_user_id from clubs where id = ?)
-                """, clubId, clubId);
-        jdbcTemplate.update("""
-                update club_members
-                set club_role = 'MANAGER'
-                where club_id = ? and left_at is null
-                  and user_id = (select manager_user_id from clubs where id = ?)
-                """, clubId, clubId);
     }
 
     private Long nullableLong(Object value) {

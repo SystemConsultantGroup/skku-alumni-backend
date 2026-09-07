@@ -363,6 +363,10 @@ public class AdminMemberExcelController {
         int updated = 0;
         Map<String, Long> majorIds = loadMajorIds();
         List<String> createdMajors = new java.util.ArrayList<>();
+        // 같은 학번이 두 줄에 있으면 뒤 줄이 앞 줄을 덮어써서 한 사람이 조용히
+        // 사라진다. 그래 놓고 "총 2명 처리 완료" 라고 알리므로 올린 사람은 알 수
+        // 없다. 어느 줄끼리 겹치는지 짚어 주고 파일을 고치게 한다.
+        Map<String, Integer> studentIdRows = new java.util.HashMap<>();
         DataFormatter formatter = new DataFormatter(Locale.KOREA);
         try (XSSFWorkbook workbook = new XSSFWorkbook(file.getInputStream())) {
             Sheet sheet = workbook.getNumberOfSheets() == 0 ? null : workbook.getSheetAt(0);
@@ -375,6 +379,10 @@ public class AdminMemberExcelController {
                 if (value(row, 0, formatter).startsWith(EXAMPLE_ROW_MARKER)) continue;
                 int excelRow = index + 1;
                 String studentId = required(row, STUDENT_ID, "학번", excelRow, formatter);
+                Integer duplicatedRow = studentIdRows.putIfAbsent(studentId, excelRow);
+                if (duplicatedRow != null) {
+                    throw badRequest(excelRow + "행: " + duplicatedRow + "행과 학번이 같습니다. (" + studentId + ")");
+                }
                 String name = required(row, NAME, "이름", excelRow, formatter);
                 String majorName = required(row, MAJOR, "학과", excelRow, formatter);
                 int admissionYear = parseYear(required(row, ADMISSION_YEAR, "입학연도", excelRow, formatter),
@@ -606,8 +614,8 @@ public class AdminMemberExcelController {
     private String parseGender(String value, int row) {
         if (!StringUtils.hasText(value)) return null;
         return switch (value.trim().toUpperCase(Locale.KOREA)) {
-            case "남", "남자", "M", "MALE" -> "M";
-            case "여", "여자", "F", "FEMALE" -> "F";
+            case "남", "남자", "남성", "M", "MALE" -> "M";
+            case "여", "여자", "여성", "F", "FEMALE" -> "F";
             default -> throw badRequest(row + "행: 성별은 남 또는 여로 적어주세요. (" + value + ")");
         };
     }
