@@ -43,6 +43,7 @@ import org.springframework.web.server.ResponseStatusException;
 public class AdminMemberDetailController {
 
     private final JdbcTemplate jdbcTemplate;
+    private final ClubLeadership clubLeadership;
     private final AdminAuditLog adminAuditLog;
     private final ProfileImageStorage profileImageStorage;
 
@@ -122,13 +123,19 @@ public class AdminMemberDetailController {
     @Transactional
     public Map<String, Object> deleteMember(@PathVariable Long memberId) {
         requireMember(memberId);
+        // 본인 탈퇴는 후임을 정할 때까지 막지만, 사무처의 삭제까지 막을 수는 없다
+        // (연락이 닿지 않는 회원을 지우는 일이 있다). 대신 맡고 있던 동호회 자리를
+        // 비워 둔다. 지워진 사람이 회장으로 남으면 그 동호회는 가입 신청을 처리할
+        // 사람이 영영 없어진다. 어느 동호회가 비었는지는 돌려주어 알린다.
+        List<String> vacatedClubs = clubLeadership.leaderships(memberId);
+        clubLeadership.resignEverywhere(memberId);
         jdbcTemplate.update("""
                 update users
                 set deleted_at = CURRENT_TIMESTAMP, status = 'WITHDRAWN', updated_at = CURRENT_TIMESTAMP
                 where id = ? and deleted_at is null
                 """, memberId);
         adminAuditLog.record("DELETE_MEMBER", "user", memberId);
-        return Map.of("id", memberId, "deleted", true);
+        return Map.of("id", memberId, "deleted", true, "vacatedClubs", vacatedClubs);
     }
 
     @PostMapping("/restore")
