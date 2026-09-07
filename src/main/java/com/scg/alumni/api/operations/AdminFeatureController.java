@@ -114,7 +114,12 @@ public class AdminFeatureController {
                                  and u.password is not null and u.password <> ''
                             then true else false end as account_registered,
                        m.name as major_name, co.name as company_name, u.job_title,
-                       ot.generation, ot.phase, orole.name as officer_role_name,
+                       -- 현행 임기를 조건 없이 붙였기 때문에, 그 임기의 임원 이력이 없는
+                       -- 회원(탈퇴·반려·아직 임원이 아닌 사람)에게도 "40대 2기"가 찍혔다.
+                       -- 직책과 회비는 비어 있는데 임기만 있는 줄은 읽는 사람을 헷갈리게 한다.
+                       case when oh.id is not null then ot.generation end as generation,
+                       case when oh.id is not null then ot.phase end as phase,
+                       orole.name as officer_role_name,
                        coalesce(oh.payment_status, pr.status) as payment_status
                 from users u
                 left join majors m on m.id = u.major_id
