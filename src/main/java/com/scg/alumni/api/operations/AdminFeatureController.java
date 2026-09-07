@@ -55,17 +55,23 @@ public class AdminFeatureController {
                 "activeMembers", count("select count(*) from users where deleted_at is null and status = 'ACTIVE'"),
                 "pendingMembers", count("select count(*) from users where deleted_at is null and status = 'PENDING'"),
                 "withdrawnMembers", count("select count(*) from users where deleted_at is null and status = 'WITHDRAWN'"),
+                // 임원 이력만 세면 탈퇴하거나 삭제된 회원의 이력까지 들어간다. 그 사람들은
+                // 회원 목록에도 주소록에도 없으므로, 대조하려는 사무처가 맞지 않는 수를 본다.
                 "paidCurrentOfficers", count("""
                         select count(*)
                         from officer_histories oh
                         join officer_terms ot on ot.id = oh.officer_term_id
+                        join users u on u.id = oh.user_id
                         where oh.deleted_at is null and ot.current_term = true and oh.payment_status = 'PAID'
+                          and u.deleted_at is null and u.status <> 'WITHDRAWN'
                         """),
                 "unpaidCurrentOfficers", count("""
                         select count(*)
                         from officer_histories oh
                         join officer_terms ot on ot.id = oh.officer_term_id
+                        join users u on u.id = oh.user_id
                         where oh.deleted_at is null and ot.current_term = true and oh.payment_status = 'UNPAID'
+                          and u.deleted_at is null and u.status <> 'WITHDRAWN'
                         """),
                 "pendingApplications", count("select count(*) from member_applications where status = 'PENDING'"),
                 "pendingReports", count("select count(*) from reports where deleted_at is null and status = 'PENDING'"),
@@ -77,9 +83,13 @@ public class AdminFeatureController {
                 order by id desc
                 limit 5
                 """, JdbcResponseMapper.INSTANCE));
+        // 회비는 기수마다 금액도 대상도 다르다. 기수 없이 "정다감 이사 10만원 납부"
+                // 만 보면 어느 임기 이야기인지 알 수 없어 대조가 안 된다.
         response.put("recentPayments", jdbcTemplate.query("""
-                select pr.id, u.name, orole.name as officer_role_name, pr.amount, pr.status, pr.paid_at
+                select pr.id, u.name, orole.name as officer_role_name, pr.amount, pr.status, pr.paid_at,
+                       ot.generation, ot.phase
                 from payment_records pr
+                join officer_terms ot on ot.id = pr.officer_term_id
                 join users u on u.id = pr.user_id and u.deleted_at is null
                 join officer_histories oh on oh.user_id = pr.user_id and oh.officer_term_id = pr.officer_term_id
                     and oh.deleted_at is null
