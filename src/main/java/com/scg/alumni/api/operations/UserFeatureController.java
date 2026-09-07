@@ -990,8 +990,13 @@ public class UserFeatureController {
         values.put("post_kind", "BUSINESS");
         values.put("industry_id", request.industryId());
 
+        // 넣을 컬럼을 명시하지 않으면 SimpleJdbcInsert 가 posts 의 모든 컬럼을 대상으로
+        // 삼아 값이 없는 자리에 NULL 을 보낸다. created_at 은 NOT NULL 이고 기본값은
+        // 컬럼을 생략했을 때만 적용되므로, 그대로 두면 비즈니스 글쓰기가 항상 실패한다.
+        // 공지 작성에서 같은 이유로 이미 겪은 문제다.
         Number id = new SimpleJdbcInsert(jdbcTemplate)
                 .withTableName("posts")
+                .usingColumns(values.keySet().toArray(String[]::new))
                 .usingGeneratedKeyColumns("id")
                 .executeAndReturnKey(values);
         return Map.of("id", id.longValue());
