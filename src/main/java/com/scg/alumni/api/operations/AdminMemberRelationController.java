@@ -287,10 +287,26 @@ public class AdminMemberRelationController {
         return Map.of("id", id, "status", status);
     }
 
+    /**
+     * 회비 내역을 지운다.
+     *
+     * <p>임원 이력의 납부 상태까지 함께 되돌린다. 주소록은 회비 레코드가 아니라
+     * {@code officer_histories.payment_status} 로 노출을 판단하기 때문이다. 지우고도
+     * 이력이 PAID 로 남으면, 회비 화면에는 아무 기록이 없는 사람이 주소록에는
+     * 납부자로 계속 걸려 있는다. 등록·수정 경로는 이미 둘을 함께 고치고 있었고
+     * 삭제만 빠져 있었다.
+     */
     @DeleteMapping("/payments/{id}")
     @Transactional
     public Map<String, Object> removePayment(@PathVariable Long memberId, @PathVariable Long id) {
+        Long officerTermId = jdbcTemplate.query(
+                "select officer_term_id from payment_records where id = ? and user_id = ? and deleted_at is null",
+                (resultSet, rowNum) -> resultSet.getLong("officer_term_id"), id, memberId)
+                .stream()
+                .findFirst()
+                .orElse(null);
         softDelete("payment_records", "user_id", memberId, id, "REMOVE_PAYMENT_RECORD", "payment_record");
+        syncOfficerPaymentStatus(memberId, officerTermId, "UNPAID");
         return Map.of("id", id, "deleted", true);
     }
 
