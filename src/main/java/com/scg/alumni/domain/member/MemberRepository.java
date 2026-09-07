@@ -52,7 +52,7 @@ public interface MemberRepository extends JpaRepository<Member, Long> {
                   or (:searchType = 'role' and exists (select roleHistory.id from OfficerHistory roleHistory where roleHistory.member = m and roleHistory.deletedAt is null and roleHistory.paymentStatus = :paymentStatus and roleHistory.officerTerm.startedAt <= :today and roleHistory.officerTerm.endedAt >= :graceFloor and replace(lower(roleHistory.officerRole.name), ' ', '') like :keyword))
                   or (:searchType = 'region' and (replace(lower(concat(coalesce(m.workAddress1, ''), coalesce(m.workAddress2, ''))), ' ', '') like :keyword or (m.homeAddressPublic = true and replace(lower(concat(coalesce(m.homeAddress1, ''), coalesce(m.homeAddress2, ''))), ' ', '') like :keyword)))
               )
-              and (:majorId is null or m.major.id = :majorId or displayMajor.id = :majorId)
+              and (:majorIds is null or m.major.id in :majorIds)
               and (:industryId is null or industry.id = :industryId)
               and (:admissionYear is null or m.admissionYear = :admissionYear)
               and (
@@ -78,7 +78,7 @@ public interface MemberRepository extends JpaRepository<Member, Long> {
             @Param("searchType") String searchType,
             @Param("admissionYearKeyword") String admissionYearKeyword,
             @Param("studentIdKeyword") String studentIdKeyword,
-            @Param("majorId") Long majorId,
+            @Param("majorIds") List<Long> majorIds,
             @Param("industryId") Long industryId,
             @Param("admissionYear") Integer admissionYear,
             @Param("officerTermId") Long officerTermId,
