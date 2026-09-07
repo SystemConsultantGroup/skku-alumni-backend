@@ -45,6 +45,7 @@ public class UserFeatureController {
 
     private final JdbcTemplate jdbcTemplate;
     private final PushNotificationService pushNotificationService;
+    private final ClubLeadership clubLeadership;
 
     @GetMapping("/me")
     public Map<String, Object> findMe() {
@@ -826,7 +827,7 @@ public class UserFeatureController {
         String column = requestedRole.equals("PRESIDENT") ? "president_user_id" : "manager_user_id";
         jdbcTemplate.update("update clubs set " + column + " = ?, updated_at = CURRENT_TIMESTAMP where id = ?",
                 request.userId(), clubId);
-        synchronizeClubRoles(clubId);
+        clubLeadership.synchronizeRoles(clubId);
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("role", requestedRole);
         response.put("userId", request.userId());
@@ -1154,26 +1155,6 @@ public class UserFeatureController {
                 where c.id = ?
                 """, String.class, userId, userId, userId, clubId);
         return roles.isEmpty() ? "" : roles.get(0);
-    }
-
-    private void synchronizeClubRoles(Long clubId) {
-        jdbcTemplate.update("""
-                update club_members
-                set club_role = 'MEMBER'
-                where club_id = ? and left_at is null
-                """, clubId);
-        jdbcTemplate.update("""
-                update club_members
-                set club_role = 'PRESIDENT'
-                where club_id = ? and left_at is null
-                  and user_id = (select president_user_id from clubs where id = ?)
-                """, clubId, clubId);
-        jdbcTemplate.update("""
-                update club_members
-                set club_role = 'MANAGER'
-                where club_id = ? and left_at is null
-                  and user_id = (select manager_user_id from clubs where id = ?)
-                """, clubId, clubId);
     }
 
     private Long nullableLong(Object value) {
