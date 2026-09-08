@@ -25,6 +25,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.jdbc.core.simple.SimpleJdbcInsert;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -739,7 +740,8 @@ public class AdminFeatureController {
                 left join industries i on i.id = p.industry_id
                 left join clubs c on c.id = p.club_id
                 left join reports r on r.target_post_id = p.id and r.deleted_at is null
-                where (? is null or p.id < ?)
+                where p.deleted_at is null
+                  and (? is null or p.id < ?)
                   and (? is null or lower(p.title) like ? or lower(coalesce(p.body, '')) like ?
                        or lower(coalesce(u.name, a.name)) like ?)
                   and (? is null or p.post_kind = ?)
@@ -800,7 +802,7 @@ public class AdminFeatureController {
         int updated = jdbcTemplate.update("""
                 update posts
                 set title = ?, body = ?, thumbnail_url = ?, post_kind = ?, updated_at = CURRENT_TIMESTAMP
-                where id = ? and post_kind in ('NOTICE', 'NEWS')
+                where id = ? and deleted_at is null and post_kind in ('NOTICE', 'NEWS')
                 """, request.title().trim(), updatedBody,
                 MarkdownImageExtractor.firstImageUrl(updatedBody), postKind, id);
         if (updated == 0) {
@@ -808,6 +810,31 @@ public class AdminFeatureController {
         }
         audit("UPDATE_OFFICIAL_POST", "post", id);
         return Map.of("id", id, "status", "UPDATED");
+    }
+
+    /**
+     * 공지/뉴스를 지운다.
+     *
+     * <p>숨김은 잘못 올린 글을 잠시 내리는 자리다. 다시 올릴 일이 없는 글까지
+     * 숨김으로 두면 목록이 지나간 글로 채워지고, 사무처는 그중 무엇이 살아 있는
+     * 글인지 매번 다시 읽어야 한다.
+     *
+     * <p>동문이 쓴 글은 여기서 지우지 않는다. 남의 글은 신고를 거쳐 회원 상세에서
+     * 지우는 자리가 따로 있고, 그 경로가 누가 무엇을 왜 지웠는지 남긴다.
+     */
+    @DeleteMapping("/posts/{id}")
+    @Transactional
+    public Map<String, Object> removeOfficialPost(@PathVariable Long id) {
+        int updated = jdbcTemplate.update("""
+                update posts
+                set deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                where id = ? and deleted_at is null and post_kind in ('NOTICE', 'NEWS')
+                """, id);
+        if (updated == 0) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "삭제할 공지/뉴스를 찾을 수 없습니다.");
+        }
+        audit("REMOVE_OFFICIAL_POST", "post", id);
+        return Map.of("id", id, "deleted", true);
     }
 
     @PatchMapping("/posts/{id}/status")
@@ -820,7 +847,7 @@ public class AdminFeatureController {
         int updated = jdbcTemplate.update("""
                 update posts
                 set status = ?, updated_at = CURRENT_TIMESTAMP
-                where id = ?
+                where id = ? and deleted_at is null
                 """, status, id);
         if (updated == 0) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "게시글을 찾을 수 없습니다.");
