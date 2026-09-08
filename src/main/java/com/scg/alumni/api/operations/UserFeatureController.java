@@ -890,8 +890,9 @@ public class UserFeatureController {
                 MarkdownImageExtractor.firstImageUrl(body), clubId);
 
         Long id = jdbcTemplate.queryForObject("select max(id) from posts", Long.class);
-        String clubName = jdbcTemplate.queryForObject("select name from clubs where id = ?", String.class, clubId);
-        pushNotificationService.notifyClubPost(clubId, clubName, id, request.title().trim(), currentUserId);
+        Map<String, Object> club = jdbcTemplate.queryForMap("select name, category from clubs where id = ?", clubId);
+        pushNotificationService.notifyClubPost(clubId, (String) club.get("name"), (String) club.get("category"),
+                id, request.title().trim(), currentUserId);
         return Map.of("id", id);
     }
 
