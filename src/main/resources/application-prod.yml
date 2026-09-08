@@ -17,4 +17,8 @@ cors:
   allowed-origins: >-
     https://alumni.scg.skku.ac.kr,
     https://admin.alumni.scg.skku.ac.kr
-    
+
+firebase:
+  # 앱의 google-services.json 과 같은 프로젝트여야 한다
+  # (release=skku-alumni-37619, debug=skku-alumni-dev). 어긋나면 기동이 실패한다.
+  expected-project-id: skku-alumni-37619
