@@ -12,3 +12,8 @@ minio:
   access-key: ${MINIO_ACCESS_KEY}
   secret-key: ${MINIO_SECRET_KEY}
   bucket: ${MINIO_BUCKET}
+
+firebase:
+  # 앱의 google-services.json 과 같은 프로젝트여야 한다
+  # (release=skku-alumni-37619, debug=skku-alumni-dev). 어긋나면 기동이 실패한다.
+  expected-project-id: skku-alumni-dev
