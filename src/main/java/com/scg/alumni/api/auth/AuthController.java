@@ -417,25 +417,53 @@ public class AuthController {
             java.time.Duration maxAge,
             boolean secure
     ) {
-        ResponseCookie cookie = ResponseCookie.from(name, value)
-                .httpOnly(true)
-                .secure(secure)
-                .sameSite("Lax")
-                .path("/")
-                .maxAge(maxAge)
-                .build();
-        response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
+        // 도메인을 붙이기 전에 발급된 호스트 전용 쿠키를 먼저 지운다. 이름은 같고 범위만
+        // 다른 쿠키가 둘 남으면 브라우저가 둘 다 보내고, 서버가 어느 것을 볼지는 정해져
+        // 있지 않다. 옛것을 지우고 새것을 심어 그 모호함을 없앤다.
+        if (hasCookieDomain()) {
+            response.addHeader(HttpHeaders.SET_COOKIE, expiredCookie(name, secure, null).toString());
+        }
+        response.addHeader(HttpHeaders.SET_COOKIE,
+                baseCookie(name, value, secure).maxAge(maxAge).build().toString());
     }
 
+    /** 로그아웃. 도메인을 붙인 것과 호스트 전용 둘 다 지운다 — 어느 쪽이 남아 있을지 모른다. */
     private void clearCookie(HttpServletResponse response, String name, boolean secure) {
-        ResponseCookie cookie = ResponseCookie.from(name, "")
+        response.addHeader(HttpHeaders.SET_COOKIE,
+                expiredCookie(name, secure, authProperties.getCookieDomain()).toString());
+        if (hasCookieDomain()) {
+            response.addHeader(HttpHeaders.SET_COOKIE, expiredCookie(name, secure, null).toString());
+        }
+    }
+
+    private ResponseCookie expiredCookie(String name, boolean secure, String domain) {
+        ResponseCookie.ResponseCookieBuilder builder = ResponseCookie.from(name, "")
                 .httpOnly(true)
                 .secure(secure)
                 .sameSite("Lax")
                 .path("/")
-                .maxAge(0)
-                .build();
-        response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
+                .maxAge(0);
+        if (domain != null && !domain.isBlank()) {
+            builder.domain(domain.trim());
+        }
+        return builder.build();
+    }
+
+    private ResponseCookie.ResponseCookieBuilder baseCookie(String name, String value, boolean secure) {
+        ResponseCookie.ResponseCookieBuilder builder = ResponseCookie.from(name, value)
+                .httpOnly(true)
+                .secure(secure)
+                .sameSite("Lax")
+                .path("/");
+        if (hasCookieDomain()) {
+            builder.domain(authProperties.getCookieDomain().trim());
+        }
+        return builder;
+    }
+
+    private boolean hasCookieDomain() {
+        String domain = authProperties.getCookieDomain();
+        return domain != null && !domain.isBlank();
     }
 
     private String cookieValue(HttpServletRequest request, String name) {

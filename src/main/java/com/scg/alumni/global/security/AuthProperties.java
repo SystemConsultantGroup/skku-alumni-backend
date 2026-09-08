@@ -34,6 +34,19 @@ public class AuthProperties {
     @NotBlank
     private String adminRefreshCookieName = "admin_refresh_token";
 
+    /**
+     * 인증 쿠키를 붙일 도메인. 비우면 쿠키를 발급한 호스트에만 붙는다(호스트 전용).
+     *
+     * <p>웹은 alumni.scg.skku.ac.kr, API 는 api.alumni.scg.skku.ac.kr 로 호스트가 다르다.
+     * 호스트 전용이면 브라우저가 웹 쪽 요청에 쿠키를 싣지 않아, 서버 컴포넌트가 API 를
+     * 부를 때 인증이 없는 요청이 된다. 공지·커뮤니티·비즈니스 목록이 늘 비어 있던 원인이다.
+     * 부모 도메인을 지정하면 두 호스트가 같은 세션을 본다.
+     *
+     * <p>로컬은 localhost 하나뿐이라 비워 둔다 — localhost 에 도메인을 지정하면
+     * 브라우저가 쿠키를 아예 거부한다.
+     */
+    private String cookieDomain = "";
+
     public Duration getAccessTokenTtl() {
         return accessTokenTtl;
     }
@@ -88,6 +101,14 @@ public class AuthProperties {
 
     public void setAdminRefreshCookieName(String adminRefreshCookieName) {
         this.adminRefreshCookieName = adminRefreshCookieName;
+    }
+
+    public String getCookieDomain() {
+        return cookieDomain;
+    }
+
+    public void setCookieDomain(String cookieDomain) {
+        this.cookieDomain = cookieDomain;
     }
 
     public String accessCookieName(AuthScope scope) {

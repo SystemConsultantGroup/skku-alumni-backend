@@ -57,9 +57,15 @@ public class PushNotificationService {
                 Map.of("type", "official-post", "postKind", postKind, "postId", String.valueOf(postId)));
     }
 
-    /** 동호회 글. 해당 동호회 회원 중 알림을 켜 둔 사람에게만 보낸다. */
+    /**
+     * 동호회 글. 해당 동호회 회원 중 알림을 켜 둔 사람에게만 보낸다.
+     *
+     * <p>clubCategory 를 함께 실어 보낸다. 앱이 알림을 눌렀을 때 열어야 할 주소가
+     * /community/{club|research}/{clubId}/posts/{postId} 라서, 카테고리를 모르면
+     * 경로를 만들지 못한다.
+     */
     @Async
-    public void notifyClubPost(Long clubId, String clubName, Long postId, String title, Long authorId) {
+    public void notifyClubPost(Long clubId, String clubName, String clubCategory, Long postId, String title, Long authorId) {
         List<String> tokens = jdbcTemplate.queryForList("""
                 select dt.token
                 from device_tokens dt
@@ -74,8 +80,11 @@ public class PushNotificationService {
                   and u.club_notification_enabled = true
                   and u.id <> ?
                 """, String.class, clubId, authorId);
-        send(tokens, clubName, title,
-                Map.of("type", "club-post", "clubId", String.valueOf(clubId), "postId", String.valueOf(postId)));
+        send(tokens, clubName, title, Map.of(
+                "type", "club-post",
+                "clubId", String.valueOf(clubId),
+                "clubCategory", clubCategory == null ? "" : clubCategory,
+                "postId", String.valueOf(postId)));
     }
 
     private void send(List<String> tokens, String title, String body, Map<String, String> data) {

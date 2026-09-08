@@ -17,3 +17,13 @@ firebase:
   # 앱의 google-services.json 과 같은 프로젝트여야 한다
   # (release=skku-alumni-37619, debug=skku-alumni-dev). 어긋나면 기동이 실패한다.
   expected-project-id: skku-alumni-dev
+
+auth:
+  # 웹(test.alumni...)과 API(api.test.alumni...)가 같은 세션을 보게 한다.
+  cookie-domain: test.alumni.scg.skku.ac.kr
+  # prod 의 쿠키 도메인(alumni.scg.skku.ac.kr)은 이 호스트들의 부모라, 이름이 같으면
+  # prod 쿠키가 dev 요청에도 함께 실려 서버가 어느 것을 볼지 모호해진다. 이름을 갈라 둔다.
+  member-access-cookie-name: dev_member_access_token
+  member-refresh-cookie-name: dev_member_refresh_token
+  admin-access-cookie-name: dev_admin_access_token
+  admin-refresh-cookie-name: dev_admin_refresh_token
