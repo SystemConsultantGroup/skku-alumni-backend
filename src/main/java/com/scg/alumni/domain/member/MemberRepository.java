@@ -9,15 +9,53 @@ import org.springframework.data.repository.query.Param;
 
 public interface MemberRepository extends JpaRepository<Member, Long> {
 
+    /**
+     * 주소록 목록.
+     *
+     * <p>임원정보 화면의 순서는 직급이 높은 사람부터다. 회장·부회장을 찾으려고
+     * 이름을 모르는 채 목록을 내려가는 사용자가 많은데, 가입한 순서(id 역순)로
+     * 늘어놓으면 회장이 몇 페이지 뒤에 묻힌다. {@code officer_roles.sort_order} 는
+     * 회장 10, 부회장 20 … 처럼 높은 자리일수록 작은 값이라 오름차순이 곧 직급 순이다.
+     *
+     * <p>정렬 기준이 되는 직급은 카드에 찍히는 직급과 같아야 한다. 임기가 바뀐
+     * 직후 유예 기간에는 지난 임기와 새 임기의 납부 기록이 둘 다 살아 있는데,
+     * 화면은 {@code Member#currentPaidOfficerHistory} 를 따라 시작일이 늦은 쪽을
+     * 보여준다. 그래서 여기서도 시작일이 가장 늦은 기록 하나만 붙여 그 직급으로
+     * 줄을 세운다. (임기 하나에 회원 하나는 유일하므로 이 조인은 줄을 늘리지 않는다.)
+     *
+     * <p>홈의 "최근 임원" 자리는 직급이 아니라 최근에 들어온 순서를 보여주는 곳이라
+     * {@code roleOrderWeight} 를 0 으로 받는다. 그러면 직급 칸이 모두 같은 값이 되어
+     * 순서는 id 역순만 남는다.
+     */
     @Query("""
             select m
             from Member m
             left join m.major.displayMajor displayMajor
             left join m.company company
             left join m.industry industry
+            join OfficerHistory currentHistory
+                on currentHistory.member = m
+               and currentHistory.deletedAt is null
+               and currentHistory.paymentStatus = :paymentStatus
+               and currentHistory.officerTerm.startedAt <= :today
+               and currentHistory.officerTerm.endedAt >= :graceFloor
+               and currentHistory.officerTerm.startedAt = (
+                       select max(latestHistory.officerTerm.startedAt)
+                       from OfficerHistory latestHistory
+                       where latestHistory.member = m
+                         and latestHistory.deletedAt is null
+                         and latestHistory.paymentStatus = :paymentStatus
+                         and latestHistory.officerTerm.startedAt <= :today
+                         and latestHistory.officerTerm.endedAt >= :graceFloor
+                   )
             where m.status = :memberStatus
               and m.deletedAt is null
-              and (:cursorId is null or m.id < :cursorId)
+              and (
+                  :cursorId is null
+                  or (:cursorSortOrder is null and m.id < :cursorId)
+                  or currentHistory.officerRole.sortOrder > :cursorSortOrder
+                  or (currentHistory.officerRole.sortOrder = :cursorSortOrder and m.id < :cursorId)
+              )
               and m.id not in :blockedMemberIds
               and exists (
                   select h.id
@@ -71,7 +109,7 @@ public interface MemberRepository extends JpaRepository<Member, Long> {
                         and memberHobby.hobby.id = :hobbyId
                   )
               )
-            order by m.id desc
+            order by currentHistory.officerRole.sortOrder * :roleOrderWeight asc, m.id desc
             """)
     List<Member> searchCurrentPaidDirectory(
             @Param("keyword") String keyword,
@@ -87,8 +125,37 @@ public interface MemberRepository extends JpaRepository<Member, Long> {
             @Param("companyName") String companyName,
             @Param("hobbyId") Long hobbyId,
             @Param("cursorId") Long cursorId,
+            @Param("cursorSortOrder") Integer cursorSortOrder,
+            @Param("roleOrderWeight") int roleOrderWeight,
             @Param("blockedMemberIds") List<Long> blockedMemberIds,
             @Param("memberStatus") MemberStatus memberStatus,
+            @Param("paymentStatus") OfficerPaymentStatus paymentStatus,
+            @Param("today") java.time.LocalDate today,
+            @Param("graceFloor") java.time.LocalDate graceFloor,
+            Pageable pageable
+    );
+
+    /**
+     * 커서로 받은 회원이 목록에서 서 있던 직급 자리.
+     *
+     * <p>목록이 직급 순으로 바뀌면서 "마지막으로 본 id 다음부터"만으로는 다음 쪽을
+     * 집을 수 없다. 직급이 같은 구간 안에서만 id 가 순서를 정하기 때문이다. 커서
+     * 회원의 직급 값을 함께 알아야 (직급, id) 두 칸짜리 자리를 찾을 수 있다.
+     *
+     * <p>정렬에 쓰는 기록과 같은 것을 골라야 하므로 시작일이 늦은 임기부터 준다.
+     */
+    @Query("""
+            select history.officerRole.sortOrder
+            from OfficerHistory history
+            where history.member.id = :memberId
+              and history.deletedAt is null
+              and history.paymentStatus = :paymentStatus
+              and history.officerTerm.startedAt <= :today
+              and history.officerTerm.endedAt >= :graceFloor
+            order by history.officerTerm.startedAt desc
+            """)
+    List<Integer> findDirectoryRoleSortOrders(
+            @Param("memberId") Long memberId,
             @Param("paymentStatus") OfficerPaymentStatus paymentStatus,
             @Param("today") java.time.LocalDate today,
             @Param("graceFloor") java.time.LocalDate graceFloor,

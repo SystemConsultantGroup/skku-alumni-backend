@@ -25,6 +25,8 @@ public class MemberDirectoryService {
 
     private static final int DEFAULT_PAGE_SIZE = 20;
     private static final int MAX_PAGE_SIZE = 50;
+    /** 홈의 "최근 임원" 처럼 직급이 아니라 최근에 들어온 순서를 보여줄 때. */
+    private static final String RECENT_SORT = "recent";
 
     private final MemberRepository memberRepository;
     private final JdbcTemplate jdbcTemplate;
@@ -41,10 +43,12 @@ public class MemberDirectoryService {
             String companyName,
             Long hobbyId,
             Long cursor,
-            Integer size
+            Integer size,
+            String sort
     ) {
         LocalDate today = LocalDate.now(ZoneId.of("Asia/Seoul"));
         int pageSize = normalizeSize(size);
+        boolean orderByRole = !RECENT_SORT.equals(normalizeSort(sort));
         List<Long> blockedMemberIds = blockedMemberIds();
         String normalizedSearchType = normalizeSearchType(searchType);
         AdmissionSearch admissionSearch = normalizeAdmissionSearch(keyword, normalizedSearchType);
@@ -62,6 +66,8 @@ public class MemberDirectoryService {
                 normalizeLike(companyName),
                 hobbyId,
                 cursor,
+                orderByRole ? directoryRoleSortOrder(cursor, today) : null,
+                orderByRole ? 1 : 0,
                 blockedMemberIds,
                 MemberStatus.ACTIVE,
                 OfficerPaymentStatus.PAID,
@@ -78,6 +84,43 @@ public class MemberDirectoryService {
         Long nextCursor = hasNext && !items.isEmpty() ? items.get(items.size() - 1).id() : null;
 
         return new CursorPageResponse<>(items, nextCursor, hasNext);
+    }
+
+    /**
+     * 목록을 무엇으로 줄 세울지.
+     *
+     * <p>기본은 직급 순이다. 임원정보 화면은 회장부터 보이는 편이 낫다. 홈의
+     * "최근 임원" 자리만 이름 그대로 최근 순을 따로 청한다.
+     */
+    private String normalizeSort(String value) {
+        if (!StringUtils.hasText(value)) {
+            return "role";
+        }
+        return RECENT_SORT.equalsIgnoreCase(value.trim()) ? RECENT_SORT : "role";
+    }
+
+    /**
+     * 커서 회원이 서 있던 직급 자리.
+     *
+     * <p>목록이 직급 순이라 다음 쪽은 "직급이 더 낮거나, 직급이 같고 id 가 더
+     * 작은" 자리에서 이어진다. 커서로 오는 값은 회원 id 하나뿐이므로 그 회원의
+     * 직급을 여기서 다시 찾는다.
+     *
+     * <p>커서를 받은 사이에 그 회원의 납부 기록이 사라졌으면 직급 자리를 알 수
+     * 없다. 그때는 예전처럼 id 만으로 이어 붙인다 — 순서는 어긋나도 같은 사람이
+     * 두 번 나오거나 "더 보기" 가 제자리를 맴도는 일은 없다.
+     */
+    private Integer directoryRoleSortOrder(Long cursor, LocalDate today) {
+        if (cursor == null) {
+            return null;
+        }
+        List<Integer> sortOrders = memberRepository.findDirectoryRoleSortOrders(
+                cursor,
+                OfficerPaymentStatus.PAID,
+                today,
+                today.minusDays(OfficerTerm.GRACE_DAYS),
+                PageRequest.of(0, 1));
+        return sortOrders.isEmpty() ? null : sortOrders.get(0);
     }
 
     /**
