@@ -64,7 +64,7 @@ class MemberDirectoryMajorFilterTest {
 
     private List<String> namesFilteredBy(String majorName) {
         return memberDirectoryService
-                .search(null, null, majorId(majorName), null, null, null, null, null, null, null, null, 50)
+                .search(null, null, majorId(majorName), null, null, null, null, null, null, null, null, 50, null)
                 .items()
                 .stream()
                 .map(MemberSummaryResponse::name)

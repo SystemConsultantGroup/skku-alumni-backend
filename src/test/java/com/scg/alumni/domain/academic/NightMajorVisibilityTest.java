@@ -99,7 +99,7 @@ class NightMajorVisibilityTest {
     void directoryHidesTheNightMarker() {
         makeNightSchoolMember();
 
-        assertThat(memberDirectoryService.search(null, null, null, null, null, null, null, null, null, null, null, 50)
+        assertThat(memberDirectoryService.search(null, null, null, null, null, null, null, null, null, null, null, 50, null)
                 .items())
                 .filteredOn(item -> item.id() == 3L)
                 .allSatisfy(item -> assertThat(item.majorName()).isEqualTo("법학과"));

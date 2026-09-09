@@ -36,9 +36,10 @@ public class MemberDirectoryController {
             @RequestParam(required = false) String companyName,
             @RequestParam(required = false) Long hobbyId,
             @RequestParam(required = false) Long cursor,
-            @RequestParam(required = false) Integer size
+            @RequestParam(required = false) Integer size,
+            @RequestParam(required = false) String sort
     ) {
         return memberDirectoryService.search(keyword, searchType, majorId, industryId, admissionYear, officerTermId,
-                officerRoleId, region, companyName, hobbyId, cursor, size);
+                officerRoleId, region, companyName, hobbyId, cursor, size, sort);
     }
 }

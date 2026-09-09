@@ -135,12 +135,12 @@ class AdminMemberDetailTest {
     }
 
     private List<Long> directoryIds() {
-        return memberDirectoryService.search(null, null, null, null, null, null, null, null, null, null, null, 50)
+        return memberDirectoryService.search(null, null, null, null, null, null, null, null, null, null, null, 50, null)
                 .items().stream().map(item -> item.id()).toList();
     }
 
     private List<Long> directoryIdsWithHobby(Long hobbyId) {
-        return memberDirectoryService.search(null, null, null, null, null, null, null, null, null, hobbyId, null, 50)
+        return memberDirectoryService.search(null, null, null, null, null, null, null, null, null, hobbyId, null, 50, null)
                 .items().stream().map(item -> item.id()).toList();
     }
 
