@@ -95,6 +95,38 @@ class AdminMemberExcelUploadTest {
         assertThat(after.get("email")).isEqualTo("new@example.com");
     }
 
+    /**
+     * 학번이 같은 회원이 이미 있으면 이름·학과·입학연도도 빈 칸이면 그대로 둔다.
+     * 사무처가 연락처 한 칸만 고치려고 학번과 전화번호만 적어 올릴 수 있어야 한다.
+     */
+    @Test
+    @Transactional
+    void blankRequiredCellsLeaveExistingMemberAlone() throws Exception {
+        Map<String, Object> before = jdbcTemplate.queryForMap(
+                "select name, major_id, admission_year, email from users where id = 1");
+
+        Map<String, Object> result = upload(sheetOf(with(row("1998310001", "", "", ""), 8, "010-9999-0002")));
+
+        assertThat(result.get("updated")).isEqualTo(1);
+        assertThat(result.get("created")).isEqualTo(0);
+        Map<String, Object> after = jdbcTemplate.queryForMap(
+                "select name, major_id, admission_year, email, phone from users where id = 1");
+        assertThat(after.get("name")).isEqualTo(before.get("name"));
+        assertThat(after.get("major_id")).isEqualTo(before.get("major_id"));
+        assertThat(after.get("admission_year")).isEqualTo(before.get("admission_year"));
+        assertThat(after.get("email")).isEqualTo(before.get("email"));
+        assertThat(after.get("phone")).isEqualTo("010-9999-0002");
+    }
+
+    /** 새 회원은 이름·학과·입학연도 없이는 만들 수 없다. 기존 회원 완화가 신규까지 번지면 안 된다. */
+    @Test
+    @Transactional
+    void newMemberStillRequiresNameMajorAndAdmissionYear() {
+        assertThatThrownBy(() -> upload(sheetOf(row("2020999998", "", "법학과", "2020"))))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("2행: 이름은(는) 필수입니다.");
+    }
+
     @Test
     @Transactional
     void newMemberIsCreatedAsPending() throws Exception {
