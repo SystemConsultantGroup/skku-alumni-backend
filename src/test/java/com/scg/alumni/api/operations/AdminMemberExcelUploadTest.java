@@ -30,6 +30,7 @@ class AdminMemberExcelUploadTest {
     private static final List<String> HEADERS = List.of(
             "학번", "이름", "킹고아이디", "학과", "입학연도", "졸업연도", "생년월일", "성별",
             "휴대전화", "이메일", "총동창회 직책", "회사명", "직위",
+            "직장 우편번호", "직장 주소", "직장 상세주소",
             "자택 우편번호", "자택 주소", "자택 상세주소");
 
     /** 필수 네 칸만 채운 줄. 나머지는 비워 "건드리지 않음"을 확인한다. */
@@ -146,14 +147,18 @@ class AdminMemberExcelUploadTest {
         cells.set(5, "2024");
         cells.set(6, "1998.03.12");
         cells.set(7, "남");
-        cells.set(13, "03063");
-        cells.set(14, "서울특별시 종로구 성균관로 25-2");
-        cells.set(15, "101동 1001호");
+        cells.set(13, "16419");
+        cells.set(14, "경기도 수원시 장안구 서부로 2066");
+        cells.set(15, "제1공학관 21동 401호");
+        cells.set(16, "03063");
+        cells.set(17, "서울특별시 종로구 성균관로 25-2");
+        cells.set(18, "101동 1001호");
 
         upload(sheetOf(cells));
 
         Map<String, Object> stored = jdbcTemplate.queryForMap("""
                 select kingo_id, graduation_year, birth_date, gender,
+                       work_zipcode, work_address1, work_address2,
                        home_zipcode, home_address1, home_address2
                 from users where student_id = '2020999998'
                 """);
@@ -161,6 +166,9 @@ class AdminMemberExcelUploadTest {
         assertThat(stored.get("graduation_year")).isEqualTo(2024);
         assertThat(stored.get("birth_date")).hasToString("1998-03-12");
         assertThat(stored.get("gender")).isEqualTo("M");
+        assertThat(stored.get("work_zipcode")).isEqualTo("16419");
+        assertThat(stored.get("work_address1")).isEqualTo("경기도 수원시 장안구 서부로 2066");
+        assertThat(stored.get("work_address2")).isEqualTo("제1공학관 21동 401호");
         assertThat(stored.get("home_zipcode")).isEqualTo("03063");
         assertThat(stored.get("home_address2")).isEqualTo("101동 1001호");
     }
