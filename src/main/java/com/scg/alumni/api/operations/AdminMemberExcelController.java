@@ -61,6 +61,7 @@ public class AdminMemberExcelController {
     private static final List<String> UPLOAD_HEADERS = List.of(
             "학번", "이름", "킹고아이디", "학과", "입학연도", "졸업연도", "생년월일", "성별",
             "휴대전화", "이메일", "총동창회 직책", "회사명", "직위",
+            "직장 우편번호", "직장 주소", "직장 상세주소",
             "자택 우편번호", "자택 주소", "자택 상세주소");
 
     /** 목록 다운로드. 사무처가 보는 자료라 상태를 포함한다. 나머지는 업로드 양식과 같아야 왕복이 된다. */
@@ -86,9 +87,12 @@ public class AdminMemberExcelController {
     private static final int OFFICER_ROLE = 10;
     private static final int COMPANY = 11;
     private static final int JOB_TITLE = 12;
-    private static final int HOME_ZIPCODE = 13;
-    private static final int HOME_ADDRESS1 = 14;
-    private static final int HOME_ADDRESS2 = 15;
+    private static final int WORK_ZIPCODE = 13;
+    private static final int WORK_ADDRESS1 = 14;
+    private static final int WORK_ADDRESS2 = 15;
+    private static final int HOME_ZIPCODE = 16;
+    private static final int HOME_ADDRESS1 = 17;
+    private static final int HOME_ADDRESS2 = 18;
     private static final Set<String> STATUSES = Set.of("PENDING", "ACTIVE", "REJECTED", "WITHDRAWN");
     private static final int MAX_ROWS = 5_000;
 
@@ -115,7 +119,7 @@ public class AdminMemberExcelController {
             for (int index = 0; index < UPLOAD_HEADERS.size(); index++) {
                 header.createCell(index).setCellValue(UPLOAD_HEADERS.get(index));
                 form.setColumnWidth(index, switch (index) {
-                    case STUDENT_ID, PHONE, BIRTH_DATE, HOME_ADDRESS1 -> 18 * 256;
+                    case STUDENT_ID, PHONE, BIRTH_DATE, WORK_ADDRESS1, HOME_ADDRESS1 -> 18 * 256;
                     case NAME, GENDER, ADMISSION_YEAR, GRADUATION_YEAR -> 12 * 256;
                     default -> 20 * 256;
                 });
@@ -124,7 +128,7 @@ public class AdminMemberExcelController {
             // 바꾼다. 생년월일은 날짜로 바꿔 서식이 제각각이 된다. 열 자체를 텍스트로 고정한다.
             CellStyle textStyle = workbook.createCellStyle();
             textStyle.setDataFormat(workbook.createDataFormat().getFormat("@"));
-            for (int index : new int[]{STUDENT_ID, PHONE, BIRTH_DATE, HOME_ZIPCODE}) {
+            for (int index : new int[]{STUDENT_ID, PHONE, BIRTH_DATE, WORK_ZIPCODE, HOME_ZIPCODE}) {
                 form.setDefaultColumnStyle(index, textStyle);
             }
 
@@ -137,7 +141,8 @@ public class AdminMemberExcelController {
             String[] exampleValues = {EXAMPLE_ROW_MARKER + ") 2020123456", "김성균", "skku.kim",
                     majorNames.isEmpty() ? "산업공학과" : majorNames.get(0), "2020", "2024",
                     "1998-03-12", "남", "010-1234-5678", "kim@example.com", roleNames.isEmpty() ? "이사" : roleNames.get(0),
-                    "성균관대학교", "책임연구원", "03063", "서울특별시 종로구 성균관로 25-2", "101동 1001호"};
+                    "성균관대학교", "책임연구원", "16419", "경기도 수원시 장안구 서부로 2066", "제1공학관 21동 401호",
+                    "03063", "서울특별시 종로구 성균관로 25-2", "101동 1001호"};
             Row exampleRow = form.createRow(1);
             for (int index = 0; index < exampleValues.length; index++) {
                 Cell cell = exampleRow.createCell(index);
@@ -165,6 +170,8 @@ public class AdminMemberExcelController {
                     {"총동창회 직책", "선택 · '직책 목록' 시트에 있는 명칭을 그대로 입력합니다. 적으면 현행 임기의 임원 이력과 회비 내역(미납)이 함께 만들어집니다. 이미 납부로 확인된 회원의 납부 여부는 바뀌지 않습니다."},
                     {"회사명", "선택 · 없는 회사명은 새로 등록됩니다."},
                     {"직위", "선택 · 회사에서의 직위입니다. (예: 부장, 대표) 총동창회 직책과는 다른 칸입니다."},
+                    {"직장 우편번호", "선택 · 5자리 (예: 16419)"},
+                    {"직장 주소 / 상세주소", "선택 · 직장의 도로명 주소와 건물·층·호수를 나눠 적습니다. 회사명과 별개로 회원 본인에게 저장됩니다."},
                     {"자택 우편번호", "선택 · 5자리 (예: 03063)"},
                     {"자택 주소 / 상세주소", "선택 · 도로명 주소와 동·호수를 나눠 적습니다."},
                     {"사진", "사진은 엑셀에 넣지 않습니다. 파일명을 학번 또는 이름으로 저장한 사진들을 zip으로 묶어 '사진 일괄 등록'으로 올립니다. (예: 2020123456.jpg)"},
@@ -213,6 +220,7 @@ public class AdminMemberExcelController {
                        u.admission_year, u.graduation_year, u.birth_date, u.gender,
                        u.phone, u.email, orole.name as officer_role_name,
                        co.name as company_name, u.job_title,
+                       u.work_zipcode, u.work_address1, u.work_address2,
                        u.home_zipcode, u.home_address1, u.home_address2,
                        u.status, u.profile_image_url
                 from users u
@@ -252,6 +260,9 @@ public class AdminMemberExcelController {
                 write(row, OFFICER_ROLE, member.get("officer_role_name"));
                 write(row, COMPANY, member.get("company_name"));
                 write(row, JOB_TITLE, member.get("job_title"));
+                write(row, WORK_ZIPCODE, member.get("work_zipcode"));
+                write(row, WORK_ADDRESS1, member.get("work_address1"));
+                write(row, WORK_ADDRESS2, member.get("work_address2"));
                 write(row, HOME_ZIPCODE, member.get("home_zipcode"));
                 write(row, HOME_ADDRESS1, member.get("home_address1"));
                 write(row, HOME_ADDRESS2, member.get("home_address2"));
@@ -421,6 +432,9 @@ public class AdminMemberExcelController {
                         .setIfPresent("email", email)
                         .setIfPresent("company_id", companyId)
                         .setIfPresent("job_title", jobTitle)
+                        .setIfPresent("work_zipcode", nullable(row, WORK_ZIPCODE, formatter))
+                        .setIfPresent("work_address1", nullable(row, WORK_ADDRESS1, formatter))
+                        .setIfPresent("work_address2", nullable(row, WORK_ADDRESS2, formatter))
                         .setIfPresent("home_zipcode", nullable(row, HOME_ZIPCODE, formatter))
                         .setIfPresent("home_address1", nullable(row, HOME_ADDRESS1, formatter))
                         .setIfPresent("home_address2", nullable(row, HOME_ADDRESS2, formatter));
@@ -434,12 +448,15 @@ public class AdminMemberExcelController {
                         jdbcTemplate.update("""
                                 insert into users (student_id, name, kingo_id, password, category, degree, major_id,
                                     admission_year, graduation_year, birth_date, gender, phone, email,
-                                    company_id, job_title, home_zipcode, home_address1, home_address2,
+                                    company_id, job_title, work_zipcode, work_address1, work_address2,
+                                    home_zipcode, home_address1, home_address2,
                                     status, created_at, updated_at)
-                                values (?, ?, ?, '', 'UNDERGRADUATE', 'BACHELOR', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                                values (?, ?, ?, '', 'UNDERGRADUATE', 'BACHELOR', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                                     'PENDING', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                                 """, studentId, name, kingoId, majorId, admissionYear,
                                 graduationYear, birthDate, gender, phone, email, companyId, jobTitle,
+                                nullable(row, WORK_ZIPCODE, formatter), nullable(row, WORK_ADDRESS1, formatter),
+                                nullable(row, WORK_ADDRESS2, formatter),
                                 nullable(row, HOME_ZIPCODE, formatter), nullable(row, HOME_ADDRESS1, formatter),
                                 nullable(row, HOME_ADDRESS2, formatter));
                         created++;
