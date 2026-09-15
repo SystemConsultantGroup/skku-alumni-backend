@@ -153,10 +153,10 @@ public class AdminMemberExcelController {
                     {"컬럼", "첫 행의 컬럼명과 순서는 바꾸거나 지우면 안 됩니다."},
                     {"빈 칸", "비워두면 그 항목은 건드리지 않습니다. 기존 회원의 값이 지워지지 않으니, 고칠 항목만 채워 올려도 됩니다. 반대로 엑셀로 값을 지울 수는 없습니다 — 지우는 일은 회원 상세 화면에서 합니다."},
                     {"학번", "필수 · 중복 기준 · 기존 학번이면 그 회원의 정보를 수정합니다. (예: 2020123456)"},
-                    {"이름", "필수"},
+                    {"이름", "새 회원은 필수 · 기존 회원은 비워두면 그대로 둡니다."},
                     {"킹고아이디", "선택 · 학교 포털 아이디를 적어두는 참고 칸입니다. 앱 로그인 아이디가 아닙니다 — 아이디와 비밀번호는 회원이 앱에서 직접 정합니다. 회원마다 달라야 하며, 다른 회원이 쓰고 있으면 해당 행 번호와 함께 오류가 납니다."},
-                    {"학과", "필수 · '학과 목록' 시트에 있는 명칭을 그대로 입력합니다. 목록에 없는 학과는 새로 등록되며, 어떤 학과가 등록됐는지 업로드 뒤에 알려드립니다. 오타도 그대로 등록되니 확인해주세요."},
-                    {"입학연도", "필수 · 1900~2100 사이의 4자리 숫자 (예: 2020)"},
+                    {"학과", "새 회원은 필수 · 기존 회원은 비워두면 그대로 둡니다. '학과 목록' 시트에 있는 명칭을 그대로 입력합니다. 목록에 없는 학과는 새로 등록되며, 어떤 학과가 등록됐는지 업로드 뒤에 알려드립니다. 오타도 그대로 등록되니 확인해주세요."},
+                    {"입학연도", "새 회원은 필수 · 기존 회원은 비워두면 그대로 둡니다. 1900~2100 사이의 4자리 숫자 (예: 2020)"},
                     {"졸업연도", "선택 · 1900~2100 사이의 4자리 숫자 (예: 2024)"},
                     {"생년월일", "선택 · 1998-03-12 처럼 적습니다. 1998.03.12 / 1998/03/12 / 19980312 도 됩니다."},
                     {"성별", "선택 · 남 또는 여 (M, F 도 됩니다)"},
@@ -383,11 +383,19 @@ public class AdminMemberExcelController {
                 if (duplicatedRow != null) {
                     throw badRequest(excelRow + "행: " + duplicatedRow + "행과 학번이 같습니다. (" + studentId + ")");
                 }
-                String name = required(row, NAME, "이름", excelRow, formatter);
-                String majorName = required(row, MAJOR, "학과", excelRow, formatter);
-                int admissionYear = parseYear(required(row, ADMISSION_YEAR, "입학연도", excelRow, formatter),
-                        "입학연도", excelRow);
-                Long majorId = findOrCreateMajor(majorIds, majorName, createdMajors);
+                // 학번이 같은 회원이 이미 있으면 갱신이고, 없으면 신규다. 어느 쪽인지에
+                // 따라 이름·학과·입학연도의 필수 여부가 달라지므로 먼저 가른다.
+                Long existingId = findMemberId(studentId);
+                boolean existing = existingId != null;
+
+                // 신규 회원은 이름·학과·입학연도 없이는 만들 수 없다. 기존 회원은 이 세 칸도
+                // 다른 칸과 똑같이 비워두면 그대로 두고, 적힌 칸만 고친다.
+                String name = existing ? nullable(row, NAME, formatter) : required(row, NAME, "이름", excelRow, formatter);
+                String majorName = existing ? nullable(row, MAJOR, formatter) : required(row, MAJOR, "학과", excelRow, formatter);
+                String admissionYearText = existing ? nullable(row, ADMISSION_YEAR, formatter)
+                        : required(row, ADMISSION_YEAR, "입학연도", excelRow, formatter);
+                Integer admissionYear = admissionYearText == null ? null : parseYear(admissionYearText, "입학연도", excelRow);
+                Long majorId = majorName == null ? null : findOrCreateMajor(majorIds, majorName, createdMajors);
 
                 String companyName = value(row, COMPANY, formatter);
                 Long companyId = StringUtils.hasText(companyName) ? findOrCreateCompany(companyName.trim()) : null;
@@ -402,9 +410,9 @@ public class AdminMemberExcelController {
 
                 // 기존 회원을 다시 부어도 이미 승인된 상태를 되돌리지 않는다.
                 MemberColumns columns = new MemberColumns()
-                        .set("name", name)
-                        .set("major_id", majorId)
-                        .set("admission_year", admissionYear)
+                        .setIfPresent("name", name)
+                        .setIfPresent("major_id", majorId)
+                        .setIfPresent("admission_year", admissionYear)
                         .setIfPresent("kingo_id", kingoId)
                         .setIfPresent("graduation_year", graduationYear)
                         .setIfPresent("birth_date", birthDate)
@@ -419,7 +427,8 @@ public class AdminMemberExcelController {
 
                 Long memberId;
                 try {
-                    if (columns.update(jdbcTemplate, studentId) > 0) {
+                    if (existing) {
+                        columns.update(jdbcTemplate, existingId);
                         updated++;
                     } else {
                         jdbcTemplate.update("""
@@ -439,8 +448,7 @@ public class AdminMemberExcelController {
                     // 학번은 위에서 기준으로 썼으니 남은 유일 제약은 킹고아이디뿐이다.
                     throw badRequest(excelRow + "행: 이미 다른 회원이 쓰고 있는 킹고아이디입니다. (" + kingoId + ")");
                 }
-                memberId = jdbcTemplate.queryForObject(
-                        "select id from users where student_id = ?", Long.class, studentId);
+                memberId = existing ? existingId : findMemberId(studentId);
 
                 if (officerRoleId != null) {
                     officerAssignment.assign(memberId, currentTermId(excelRow), officerRoleId);
@@ -455,12 +463,19 @@ public class AdminMemberExcelController {
                 "createdMajors", List.copyOf(createdMajors));
     }
 
+    /** 학번으로 기존 회원을 찾는다. 학번은 유일 제약이 있어 많아야 한 명이다. */
+    private Long findMemberId(String studentId) {
+        List<Long> ids = jdbcTemplate.queryForList("select id from users where student_id = ?", Long.class, studentId);
+        return ids.isEmpty() ? null : ids.get(0);
+    }
+
     /**
      * 갱신할 칸만 모아 update 문을 만든다.
      *
      * <p>빈 칸을 그대로 덮어쓰면 안 된다. 사무처가 이름과 학과만 정리한 명단을
      * 다시 부었을 때, 비워둔 전화번호·이메일 칸 때문에 앱에서 회원이 직접 채워
-     * 넣은 연락처가 통째로 날아간다. 값이 적힌 칸만 건드린다.
+     * 넣은 연락처가 통째로 날아간다. 값이 적힌 칸만 건드린다. 기존 회원이면
+     * 이름·학과·입학연도도 예외가 아니다 — 학번만 적힌 줄은 아무것도 바꾸지 않는다.
      *
      * <p>엑셀로 값을 지울 방법은 없어진다. 지우는 일은 회원 상세 화면에서 한다 —
      * 무엇을 지우는지 보면서 하는 편이 맞다.
@@ -483,12 +498,14 @@ public class AdminMemberExcelController {
             return set(column, value);
         }
 
-        int update(JdbcTemplate jdbcTemplate, String studentId) {
+        /** 적힌 칸이 하나도 없으면 updated_at 도 건드리지 않는다. 바뀐 게 없는데 수정한 것처럼 보이면 안 된다. */
+        int update(JdbcTemplate jdbcTemplate, Long memberId) {
+            if (assignments.isEmpty()) return 0;
             List<Object> arguments = new java.util.ArrayList<>(parameters);
-            arguments.add(studentId);
+            arguments.add(memberId);
             return jdbcTemplate.update(
                     "update users set " + String.join(", ", assignments)
-                            + ", updated_at = CURRENT_TIMESTAMP where student_id = ?",
+                            + ", updated_at = CURRENT_TIMESTAMP where id = ?",
                     arguments.toArray());
         }
     }
