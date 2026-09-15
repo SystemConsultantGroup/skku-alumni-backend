@@ -8,6 +8,7 @@ import com.scg.alumni.global.security.AuthProperties;
 import com.scg.alumni.global.security.AuthScope;
 import com.scg.alumni.global.security.AuthenticatedPrincipal;
 import com.scg.alumni.global.security.JwtTokenService;
+import com.scg.alumni.global.security.PasswordPolicy;
 import com.scg.alumni.global.security.RefreshTokenService;
 import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
@@ -516,10 +517,7 @@ public class AuthController {
             @NotBlank String majorName,
             @NotBlank String phone,
             @NotBlank
-            @Pattern(
-                    regexp = "^(?=.*[A-Za-z])(?=.*\\d)(?=.*[^A-Za-z0-9]).{8,}$",
-                    message = "비밀번호는 8자 이상이며 영문, 숫자, 특수문자를 포함해야 합니다."
-            )
+            @Pattern(regexp = PasswordPolicy.PATTERN, message = PasswordPolicy.MESSAGE)
             String password
     ) {
     }
