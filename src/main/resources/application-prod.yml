@@ -24,5 +24,7 @@ firebase:
   expected-project-id: skku-alumni-37619
 
 auth:
+  # 사무처가 발급하는 비밀번호 재설정 링크의 앞부분.
+  member-web-url: https://alumni.scg.skku.ac.kr
   # 웹(alumni.scg.skku.ac.kr)과 API(api.alumni.scg.skku.ac.kr)가 같은 세션을 보게 한다.
   cookie-domain: alumni.scg.skku.ac.kr

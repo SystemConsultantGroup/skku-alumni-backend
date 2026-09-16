@@ -8,6 +8,7 @@ import com.google.firebase.messaging.MulticastMessage;
 import com.google.firebase.messaging.Notification;
 import com.google.firebase.messaging.SendResponse;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import lombok.extern.slf4j.Slf4j;
@@ -24,6 +25,10 @@ import org.springframework.stereotype.Service;
  *
  * <p>발송은 게시글 저장과 분리한다. 회원이 수천 명이 되면 발송에 몇 분이 걸리는데,
  * 그동안 글쓰기 응답을 붙잡고 있을 이유가 없다. 발송이 실패해도 게시글은 남아야 한다.
+ *
+ * <p>사무처가 고른 회원에게 직접 보내는 알림({@link #sendToMembers})만은 그 자리에서
+ * 보내고 결과를 돌려준다. 보낸 사람이 화면 앞에 서서 "몇 명에게 나갔는지"를 기다리고
+ * 있고, 되돌릴 수 없는 일이라 나중에 로그를 뒤져 확인하게 두어서는 안 된다.
  */
 @Slf4j
 @Service
@@ -87,19 +92,68 @@ public class PushNotificationService {
                 "postId", String.valueOf(postId)));
     }
 
-    private void send(List<String> tokens, String title, String body, Map<String, String> data) {
+    /**
+     * 사무처가 고른 회원에게 직접 보낸다.
+     *
+     * <p>공지·동호회 알림과 달리 종류별 스위치(notice/club)는 보지 않는다. 그 스위치는
+     * "글이 올라올 때마다 오는 알림"을 줄이려는 것이지, 사무처가 나를 지목해 보내는
+     * 안내까지 받지 않겠다는 뜻이 아니다. 다만 전체 스위치를 끈 회원에게는 보내지
+     * 않는다 — 그 사람은 앱 알림 자체를 받지 않기로 한 것이다.
+     *
+     * <p>어느 회원의 기기 몇 대가 대상이 되었는지 함께 돌려준다. 고른 사람과 실제로
+     * 나간 사람이 다를 수 있고(알림 꺼짐·기기 미등록), 그 차이는 보낸 사람이 화면에서
+     * 바로 봐야 하는 정보다.
+     *
+     * <p>link 가 있으면 앱이 알림을 눌렀을 때 그 화면을 연다(PushLink 참고). 없으면 홈이 열린다.
+     */
+    public DirectSendResult sendToMembers(List<Long> memberIds, String title, String body, PushLink link) {
+        if (memberIds.isEmpty()) {
+            return new DirectSendResult(Map.of(), 0, 0, 0, false);
+        }
+        String placeholders = String.join(", ", memberIds.stream().map(id -> "?").toList());
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
+                select u.id as user_id, dt.token
+                from users u
+                join device_tokens dt on dt.user_id = u.id and dt.deleted_at is null
+                where u.id in (%s)
+                  and u.deleted_at is null
+                  and u.status = 'ACTIVE'
+                  and u.notification_enabled = true
+                """.formatted(placeholders), memberIds.toArray());
+
+        Map<Long, Integer> devicesByMember = new LinkedHashMap<>();
+        List<String> tokens = new ArrayList<>();
+        for (Map<String, Object> row : rows) {
+            Long memberId = ((Number) row.get("user_id")).longValue();
+            devicesByMember.merge(memberId, 1, Integer::sum);
+            tokens.add((String) row.get("token"));
+        }
+
+        Map<String, String> data = new LinkedHashMap<>();
+        data.put("type", "admin-message");
+        if (link != null) {
+            data.putAll(link.payload());
+        }
+        SendOutcome outcome = send(tokens, title, body, data);
+        return new DirectSendResult(devicesByMember, tokens.size(), outcome.successCount(), outcome.failureCount(),
+                outcome.dispatched());
+    }
+
+    private SendOutcome send(List<String> tokens, String title, String body, Map<String, String> data) {
         if (tokens.isEmpty()) {
-            return;
+            return new SendOutcome(0, 0, false);
         }
         FirebaseApp app = firebaseApp.getIfAvailable();
         if (app == null) {
             // 조용히 넘어가면 운영에서 설정이 빠진 것을 눈치채지 못한다.
             log.warn("Firebase 가 설정되지 않아 알림 {}건을 보내지 못했습니다.", tokens.size());
-            return;
+            return new SendOutcome(0, 0, false);
         }
         log.info("푸시 발송을 시작합니다. 대상 {}건", tokens.size());
         FirebaseMessaging messaging = FirebaseMessaging.getInstance(app);
         List<String> staleTokens = new ArrayList<>();
+        int successCount = 0;
+        int failureCount = 0;
 
         for (int start = 0; start < tokens.size(); start += BATCH_SIZE) {
             List<String> batch = tokens.subList(start, Math.min(start + BATCH_SIZE, tokens.size()));
@@ -112,15 +166,22 @@ public class PushNotificationService {
                 List<SendResponse> responses = messaging.sendEachForMulticast(message).getResponses();
                 for (int index = 0; index < responses.size(); index++) {
                     SendResponse response = responses.get(index);
-                    if (!response.isSuccessful() && isStale(response.getException())) {
+                    if (response.isSuccessful()) {
+                        successCount++;
+                        continue;
+                    }
+                    failureCount++;
+                    if (isStale(response.getException())) {
                         staleTokens.add(batch.get(index));
                     }
                 }
             } catch (FirebaseMessagingException exception) {
+                failureCount += batch.size();
                 log.error("푸시 발송에 실패했습니다. 대상 {}건", batch.size(), exception);
             }
         }
         removeStaleTokens(staleTokens);
+        return new SendOutcome(successCount, failureCount, true);
     }
 
     /** 앱을 지웠거나 토큰이 갈린 기기. 남겨두면 발송할 때마다 실패한다. */
@@ -139,5 +200,23 @@ public class PushNotificationService {
         jdbcTemplate.batchUpdate("delete from device_tokens where token = ?",
                 staleTokens.stream().map(token -> new Object[]{token}).toList());
         log.info("사용할 수 없는 기기 토큰 {}건을 정리했습니다.", staleTokens.size());
+    }
+
+    /**
+     * 직접 발송의 결과.
+     *
+     * @param devicesByMember 실제 발송 대상이 된 회원과 그 회원의 기기 수
+     * @param dispatched      FCM 에 실제로 넘겼는지. 자격 증명이 없거나 대상이 없으면 false
+     */
+    public record DirectSendResult(
+            Map<Long, Integer> devicesByMember,
+            int deviceCount,
+            int successCount,
+            int failureCount,
+            boolean dispatched
+    ) {
+    }
+
+    private record SendOutcome(int successCount, int failureCount, boolean dispatched) {
     }
 }

@@ -6,10 +6,12 @@ import com.scg.alumni.domain.academic.MajorNames;
 import com.scg.alumni.api.common.MarkdownImageExtractor;
 import com.scg.alumni.domain.officer.OfficerTerm;
 import com.scg.alumni.global.security.AuthContext;
+import com.scg.alumni.global.security.PasswordPolicy;
 import com.scg.alumni.infrastructure.push.PushNotificationService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import java.net.URI;
 import java.time.LocalDate;
@@ -23,6 +25,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.simple.SimpleJdbcInsert;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.http.HttpStatus;
 import org.springframework.util.StringUtils;
@@ -46,6 +49,7 @@ public class UserFeatureController {
     private final JdbcTemplate jdbcTemplate;
     private final PushNotificationService pushNotificationService;
     private final ClubLeadership clubLeadership;
+    private final PasswordEncoder passwordEncoder;
 
     @GetMapping("/me")
     public Map<String, Object> findMe() {
@@ -149,6 +153,36 @@ public class UserFeatureController {
                 request.phonePublic(), request.emailPublic(),
                 request.homeAddressPublic(), AuthContext.currentMemberId());
         return findMe();
+    }
+
+    /**
+     * 본인이 비밀번호를 바꾼다.
+     *
+     * <p>지금 쓰는 비밀번호를 함께 받는다. 로그인한 화면을 잠깐 빌리는 것만으로
+     * 비밀번호를 바꿀 수 있으면, 자리를 비운 사이에 계정을 통째로 빼앗긴다.
+     *
+     * <p>바꾼 뒤에도 이미 로그인해 둔 다른 기기는 그대로 남는다. 발급된 토큰을
+     * 회원별로 찾아 지울 수 있는 구조가 아니다 — 빼앗긴 계정을 되찾는 용도로는
+     * 아직 부족하고, 그 경우에는 사무처가 초기화해 주는 편이 확실하다.
+     */
+    @PatchMapping("/me/password")
+    @Transactional
+    public Map<String, Object> changeMyPassword(@Valid @RequestBody PasswordChangeRequest request) {
+        Long currentUserId = AuthContext.currentMemberId();
+        String stored = jdbcTemplate.queryForObject(
+                "select password from users where id = ?", String.class, currentUserId);
+        if (!StringUtils.hasText(stored) || !passwordEncoder.matches(request.currentPassword(), stored)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "현재 비밀번호가 맞지 않습니다.");
+        }
+        if (passwordEncoder.matches(request.newPassword(), stored)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "지금 쓰는 비밀번호와 다른 비밀번호를 정해주세요.");
+        }
+        jdbcTemplate.update("""
+                update users
+                set password = ?, updated_at = CURRENT_TIMESTAMP
+                where id = ?
+                """, passwordEncoder.encode(request.newPassword()), currentUserId);
+        return Map.of("changed", true);
     }
 
     /**
@@ -1245,6 +1279,14 @@ public class UserFeatureController {
             List<Long> hobbyIds,
             List<@Size(max = 1000) String> webLinks,
             @Size(max = 500) String prText) {
+    }
+
+    public record PasswordChangeRequest(
+            @NotBlank String currentPassword,
+            @NotBlank
+            @Pattern(regexp = PasswordPolicy.PATTERN, message = PasswordPolicy.MESSAGE)
+            String newPassword
+    ) {
     }
 
     public record DeviceTokenRequest(

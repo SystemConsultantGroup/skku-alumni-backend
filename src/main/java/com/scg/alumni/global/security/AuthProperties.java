@@ -47,6 +47,20 @@ public class AuthProperties {
      */
     private String cookieDomain = "";
 
+    /**
+     * 회원용 웹 주소. 사무처가 발급받는 비밀번호 재설정 링크의 앞부분이 된다.
+     *
+     * <p>API 와 웹의 호스트가 달라서 요청 주소로는 알 수 없다. 환경마다 적는다.
+     */
+    private String memberWebUrl = "http://localhost:4000";
+
+    /**
+     * 재설정 링크의 수명. 사무처가 문자로 보내고 회원이 퇴근 후에 열어보는 일이 흔해
+     * 몇십 분으로는 모자란다. 대신 한 번 쓰면 사라지고, 다시 발급하면 앞의 링크가 죽는다.
+     */
+    @DurationUnit(HOURS)
+    private Duration passwordResetLinkTtl = Duration.ofHours(72);
+
     public Duration getAccessTokenTtl() {
         return accessTokenTtl;
     }
@@ -109,6 +123,22 @@ public class AuthProperties {
 
     public void setCookieDomain(String cookieDomain) {
         this.cookieDomain = cookieDomain;
+    }
+
+    public String getMemberWebUrl() {
+        return memberWebUrl;
+    }
+
+    public void setMemberWebUrl(String memberWebUrl) {
+        this.memberWebUrl = memberWebUrl;
+    }
+
+    public Duration getPasswordResetLinkTtl() {
+        return passwordResetLinkTtl;
+    }
+
+    public void setPasswordResetLinkTtl(Duration passwordResetLinkTtl) {
+        this.passwordResetLinkTtl = passwordResetLinkTtl;
     }
 
     public String accessCookieName(AuthScope scope) {
