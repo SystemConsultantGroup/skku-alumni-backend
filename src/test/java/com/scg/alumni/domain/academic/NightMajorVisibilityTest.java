@@ -5,8 +5,12 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 
 import com.scg.alumni.api.auth.AuthController;
 import com.scg.alumni.api.member.MemberDirectoryService;
+import com.scg.alumni.api.member.MemberSummaryResponse;
+import com.scg.alumni.api.operations.ReferenceDataController;
 import com.scg.alumni.global.security.AuthScope;
 import com.scg.alumni.global.security.AuthenticatedPrincipal;
+import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -34,14 +38,25 @@ class NightMajorVisibilityTest {
     private MemberDirectoryService memberDirectoryService;
 
     @Autowired
+    private ReferenceDataController referenceDataController;
+
+    @Autowired
+    private MajorCatalog majorCatalog;
+
+    @Autowired
     private JdbcTemplate jdbcTemplate;
 
     private void makeNightSchoolMember() {
+        makeNightSchoolMember(3L);
+    }
+
+    /** 동문 목록에 나오는 사람은 시드의 1번이다(3번은 현행 임기 납부자가 아니라 목록에 없다). */
+    private void makeNightSchoolMember(long userId) {
         jdbcTemplate.update("""
                 insert into majors (id, name, normalized_name, status, college_id, created_at, updated_at)
                 values (900, '(야)법학과', '(야)법학과', 'ACTIVE', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """);
-        jdbcTemplate.update("update users set major_id = 900 where id = 3");
+        jdbcTemplate.update("update users set major_id = 900 where id = ?", userId);
     }
 
     @BeforeEach
@@ -97,11 +112,12 @@ class NightMajorVisibilityTest {
     @Test
     @Transactional
     void directoryHidesTheNightMarker() {
-        makeNightSchoolMember();
+        makeNightSchoolMember(1L);
 
         assertThat(memberDirectoryService.search(null, null, null, null, null, null, null, null, null, null, null, 50, null)
                 .items())
-                .filteredOn(item -> item.id() == 3L)
+                .filteredOn(item -> item.id() == 1L)
+                .hasSize(1)
                 .allSatisfy(item -> assertThat(item.majorName()).isEqualTo("법학과"));
     }
 
@@ -118,5 +134,58 @@ class NightMajorVisibilityTest {
                             "night.test", "이율전", 1995, "법학과", "010-1000-0003", "Passw0rd!"));
             assertThat(response.id()).isEqualTo(3L);
         }).doesNotThrowAnyException();
+    }
+
+    /** 로그인 없이 열리는 학과 목록에 야간 학과가 따로 나오면, 그 항목으로 야간 졸업생을 골라낼 수 있다. */
+    @Test
+    @Transactional
+    void publicMajorListHasNoNightEntry() {
+        makeNightSchoolMember();
+
+        // 컨트롤러 전체는 H2 에 없는 substring_index 를 써서 학과 목록만 부른다. 컨트롤러는 이 목록을 그대로 싣는다.
+        List<Map<String, Object>> majors = majorCatalog.memberOptions();
+
+        assertThat(majors).extracting(major -> (String) major.get("name"))
+                .noneMatch(name -> name.contains("(야"))
+                .containsOnlyOnce("법학과");
+        assertThat(majors).extracting(major -> (Long) major.get("id")).doesNotContain(900L);
+    }
+
+    /** 관리자는 저장된 이름 그대로 본다. */
+    @Test
+    @Transactional
+    void adminMajorListKeepsTheNightMarker() {
+        makeNightSchoolMember();
+
+        assertThat(referenceDataController.findAdminMajors())
+                .extracting(major -> (String) major.get("name"))
+                .contains("(야)법학과", "법학과");
+    }
+
+    /** 주간 학과로 거르면 야간 졸업생도 함께 나온다. 따로 거를 방법이 없어야 한다. */
+    @Test
+    @Transactional
+    void filteringByTheDaytimeMajorIncludesNightSchoolMembers() {
+        makeNightSchoolMember(1L);
+        Long dayMajorId = jdbcTemplate.queryForObject("select id from majors where name = '법학과'", Long.class);
+
+        assertThat(directoryIds(null, null, dayMajorId)).contains(1L);
+    }
+
+    /** 검색어 '(야)' 가 저장된 이름에 걸리면 결과가 곧 야간 졸업생 명단이 된다. */
+    @Test
+    @Transactional
+    void searchingForTheNightMarkerFindsNobody() {
+        makeNightSchoolMember(1L);
+
+        assertThat(directoryIds("(야)", null, null)).doesNotContain(1L);
+        assertThat(directoryIds("(야)", "major", null)).doesNotContain(1L);
+        assertThat(directoryIds("법학과", "major", null)).contains(1L);
+    }
+
+    private List<Long> directoryIds(String keyword, String searchType, Long majorId) {
+        return memberDirectoryService.search(keyword, searchType, majorId, null, null, null, null, null, null, null,
+                        null, 50, null)
+                .items().stream().map(MemberSummaryResponse::id).toList();
     }
 }
