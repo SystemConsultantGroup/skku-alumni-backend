@@ -26,11 +26,15 @@ public interface MemberRepository extends JpaRepository<Member, Long> {
      * <p>홈의 "최근 임원" 자리는 직급이 아니라 최근에 들어온 순서를 보여주는 곳이라
      * {@code roleOrderWeight} 를 0 으로 받는다. 그러면 직급 칸이 모두 같은 값이 되어
      * 순서는 id 역순만 남는다.
+     *
+     * <p>학과는 저장된 이름으로 비교하지 않는다. 저장된 이름에는 야간 표기가 남아 있어
+     * 검색어 '(야)' 가 야간 졸업생만 골라낸다. 검색어에 걸리는 학과 id 는
+     * {@code MajorCatalog} 가 야간 표기를 지운 이름으로 미리 골라 {@code keywordMajorIds} 로 넘긴다.
      */
     @Query("""
             select m
             from Member m
-            left join m.major.displayMajor displayMajor
+            join m.major major
             left join m.company company
             left join m.industry industry
             join OfficerHistory currentHistory
@@ -72,8 +76,7 @@ public interface MemberRepository extends JpaRepository<Member, Long> {
                   :keyword is null
                   or (:searchType = 'all' and (
                       replace(lower(m.name), ' ', '') like :keyword
-                      or replace(lower(m.major.name), ' ', '') like :keyword
-                      or replace(lower(coalesce(displayMajor.name, '')), ' ', '') like :keyword
+                      or major.id in :keywordMajorIds
                       or replace(lower(coalesce(m.studentId, '')), ' ', '') like :keyword
                       or str(m.admissionYear) like :keyword
                       or replace(lower(coalesce(company.name, '')), ' ', '') like :keyword
@@ -83,14 +86,14 @@ public interface MemberRepository extends JpaRepository<Member, Long> {
                       or replace(lower(concat(coalesce(m.workAddress1, ''), coalesce(m.workAddress2, ''))), ' ', '') like :keyword
                       or (m.homeAddressPublic = true and replace(lower(concat(coalesce(m.homeAddress1, ''), coalesce(m.homeAddress2, ''))), ' ', '') like :keyword)
                   ))
-                  or (:searchType = 'major' and (replace(lower(m.major.name), ' ', '') like :keyword or replace(lower(coalesce(displayMajor.name, '')), ' ', '') like :keyword))
+                  or (:searchType = 'major' and major.id in :keywordMajorIds)
                   or (:searchType = 'industry' and replace(lower(coalesce(industry.name, '')), ' ', '') like :keyword)
                   or (:searchType = 'admission' and (replace(lower(coalesce(m.studentId, '')), ' ', '') like :studentIdKeyword or str(m.admissionYear) like :admissionYearKeyword))
                   or (:searchType = 'term' and exists (select termHistory.id from OfficerHistory termHistory where termHistory.member = m and termHistory.deletedAt is null and termHistory.paymentStatus = :paymentStatus and termHistory.officerTerm.startedAt <= :today and termHistory.officerTerm.endedAt >= :graceFloor and replace(lower(concat(str(termHistory.officerTerm.generation), '대', str(termHistory.officerTerm.phase), '기')), ' ', '') like :keyword))
                   or (:searchType = 'role' and exists (select roleHistory.id from OfficerHistory roleHistory where roleHistory.member = m and roleHistory.deletedAt is null and roleHistory.paymentStatus = :paymentStatus and roleHistory.officerTerm.startedAt <= :today and roleHistory.officerTerm.endedAt >= :graceFloor and replace(lower(roleHistory.officerRole.name), ' ', '') like :keyword))
                   or (:searchType = 'region' and (replace(lower(concat(coalesce(m.workAddress1, ''), coalesce(m.workAddress2, ''))), ' ', '') like :keyword or (m.homeAddressPublic = true and replace(lower(concat(coalesce(m.homeAddress1, ''), coalesce(m.homeAddress2, ''))), ' ', '') like :keyword)))
               )
-              and (:majorIds is null or m.major.id in :majorIds)
+              and (:majorIds is null or major.id in :majorIds)
               and (:industryId is null or industry.id = :industryId)
               and (:admissionYear is null or m.admissionYear = :admissionYear)
               and (
@@ -116,6 +119,7 @@ public interface MemberRepository extends JpaRepository<Member, Long> {
             @Param("searchType") String searchType,
             @Param("admissionYearKeyword") String admissionYearKeyword,
             @Param("studentIdKeyword") String studentIdKeyword,
+            @Param("keywordMajorIds") List<Long> keywordMajorIds,
             @Param("majorIds") List<Long> majorIds,
             @Param("industryId") Long industryId,
             @Param("admissionYear") Integer admissionYear,

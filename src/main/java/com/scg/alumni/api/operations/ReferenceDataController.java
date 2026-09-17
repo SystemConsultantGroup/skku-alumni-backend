@@ -1,28 +1,26 @@
 package com.scg.alumni.api.operations;
 
+import com.scg.alumni.domain.academic.MajorCatalog;
+import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequiredArgsConstructor
-@RequestMapping("/api/v1/reference-data")
 public class ReferenceDataController {
 
     private final JdbcTemplate jdbcTemplate;
+    private final MajorCatalog majorCatalog;
 
-    @GetMapping
+    @GetMapping("/api/v1/reference-data")
     public Map<String, Object> findReferenceData() {
         Map<String, Object> response = new LinkedHashMap<>();
-        response.put("majors", jdbcTemplate.query("""
-                select id, name, normalized_name, status, display_major_id
-                from majors
-                order by name
-                """, JdbcResponseMapper.INSTANCE));
+        // 로그인 없이 열리는 목록이라 회원 쪽 규칙을 따른다. 야간 표기는 관리자에게만 보인다.
+        response.put("majors", majorCatalog.memberOptions());
         response.put("industries", jdbcTemplate.query("""
                 select i.id, i.name,
                        (
@@ -88,5 +86,11 @@ public class ReferenceDataController {
                 order by sort_order, id
                 """, JdbcResponseMapper.INSTANCE));
         return response;
+    }
+
+    /** 관리자 화면이 고르는 학과 목록. 저장된 이름(야간 표기 포함) 그대로다. */
+    @GetMapping("/api/v1/admin/majors")
+    public List<Map<String, Object>> findAdminMajors() {
+        return majorCatalog.adminOptions();
     }
 }
