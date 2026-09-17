@@ -12,7 +12,20 @@ permissions:
   id-token: write
 
 jobs:
+  verify:
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || vars.PLATFORM_DEPLOY_ENABLED == 'true')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          distribution: corretto
+          java-version: '25'
+      - uses: gradle/actions/setup-gradle@v6
+      - run: ./gradlew test
+
   bootstrap:
+    needs: verify
     name: Build initial image locks
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
@@ -52,6 +65,7 @@ jobs:
           retention-days: 30
 
   deliver:
+    needs: verify
     if: github.event_name == 'push' && vars.PLATFORM_DEPLOY_ENABLED == 'true'
     uses: SystemConsultantGroup/kubernetes/.github/workflows/build-image.yaml@6b83f97826c7d46c024e9a8568f3b358a917e620
     with:
