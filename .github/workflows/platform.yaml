@@ -1,0 +1,63 @@
+name: Platform deployment
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  attestations: write
+  id-token: write
+
+jobs:
+  bootstrap:
+    name: Build initial image locks
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a
+        id: build
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          tags: ghcr.io/systemconsultantgroup/alumni-platform-be:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+      - name: Write immutable lock
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          WORKLOAD: be
+        run: |
+          jq -n \
+            --arg repository "https://github.com/$GITHUB_REPOSITORY.git" \
+            --arg revision "$GITHUB_SHA" \
+            --arg image "ghcr.io/systemconsultantgroup/alumni-platform-$WORKLOAD@$DIGEST" \
+            '{source: {repository: $repository, revision: $revision}, image: $image}' > "$WORKLOAD.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: platform-lock-be
+          path: be.json
+          retention-days: 30
+
+  deliver:
+    if: github.event_name == 'push' && vars.PLATFORM_DEPLOY_ENABLED == 'true'
+    uses: SystemConsultantGroup/kubernetes/.github/workflows/build-image.yaml@6b83f97826c7d46c024e9a8568f3b358a917e620
+    with:
+      application: alumni
+      workload: be
+      image: ghcr.io/systemconsultantgroup/alumni-platform-be
+    secrets:
+      KUBERNETES_APP_ID: ${{ secrets.KUBERNETES_APP_ID }}
+      KUBERNETES_APP_PRIVATE_KEY: ${{ secrets.KUBERNETES_APP_PRIVATE_KEY }}
