@@ -1,7 +1,7 @@
 # 새 SCG 클러스터 배포
 
 기존 `cd-dev` / `cd-prod`는 유지합니다. `platform.yaml`은 별도의 GHCR
-이미지와 `kubernetes` 저장소를 사용하며 기본적으로 자동 배포가 꺼져 있습니다.
+이미지와 `kubernetes` 저장소를 사용하며 main push마다 자동 배포를 시도합니다.
 
 ## 최초 등록
 
@@ -17,15 +17,19 @@
 
 ## 이후 자동 배포
 
-최초 `applications/alumni/instances/production.yaml`이 인프라 main에 등록된 뒤:
+자동 배포에 필요한 Actions Secrets:
 
 - Actions Secrets: `KUBERNETES_APP_ID`, `KUBERNETES_APP_PRIVATE_KEY`
-- Actions Variable: `PLATFORM_DEPLOY_ENABLED=true`
 
-이후 main push 시 공통 워크플로가 새 이미지와 배포 lock을 갱신합니다.
+main push 시 공통 워크플로가 새 이미지와 배포 lock을 갱신합니다.
+최초 `applications/alumni/instances/production.yaml` 등록이나 인증정보 준비가
+끝나기 전에는 자동 배포가 실패할 수 있습니다. 준비 후 실패한 Actions 실행을 재실행합니다.
 develop, testing, PR preview는 이번 변경에서 새 플랫폼 배포 대상으로 등록하지 않습니다.
-자동 배포를 멈추려면 위 Variable을 false로 바꿉니다.
-기존 CD는 이 Variable의 영향을 받지 않습니다.
+기존 CD는 변경하지 않습니다. 백엔드 테스트 통과 조건은 유지합니다.
+
+이미지 빌드나 배포 lock 갱신 실패는 GitHub Actions에서 재실행해야 합니다.
+Argo CD Sync는 Git에 이미 기록된 상태만 적용하며, 이미지를 빌드하거나 lock을
+갱신하지 않습니다. lock 반영 후 클러스터 적용 실패는 원인을 해결하고 Sync로 재시도합니다.
 
 ## 런타임 설정
 

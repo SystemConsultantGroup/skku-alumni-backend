@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   verify:
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || vars.PLATFORM_DEPLOY_ENABLED == 'true')
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -66,7 +66,7 @@ jobs:
 
   deliver:
     needs: verify
-    if: github.event_name == 'push' && vars.PLATFORM_DEPLOY_ENABLED == 'true'
+    if: github.event_name == 'push'
     uses: SystemConsultantGroup/kubernetes/.github/workflows/build-image.yaml@1a4f2fd3cdd14187f6ae423fb27c04dc58aa90ee
     with:
       application: alumni
