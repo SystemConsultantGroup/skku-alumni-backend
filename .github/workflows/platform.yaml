@@ -67,7 +67,7 @@ jobs:
   deliver:
     needs: verify
     if: github.event_name == 'push' && vars.PLATFORM_DEPLOY_ENABLED == 'true'
-    uses: SystemConsultantGroup/kubernetes/.github/workflows/build-image.yaml@6b83f97826c7d46c024e9a8568f3b358a917e620
+    uses: SystemConsultantGroup/kubernetes/.github/workflows/build-image.yaml@1a4f2fd3cdd14187f6ae423fb27c04dc58aa90ee
     with:
       application: alumni
       workload: be
