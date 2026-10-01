@@ -1,12 +1,18 @@
-FROM amazoncorretto:25-alpine
+FROM amazoncorretto:25-alpine AS builder
 
-ARG JAR_FILE=build/libs/*.jar
+WORKDIR /src
+COPY gradlew build.gradle settings.gradle gradle.properties ./
+COPY gradle ./gradle
+COPY src ./src
+RUN chmod +x gradlew && ./gradlew --no-daemon bootJar
+
+FROM amazoncorretto:25-alpine AS runner
 
 WORKDIR /app
-RUN addgroup -S spring && adduser -S spring -G spring
-COPY ${JAR_FILE} app.jar
+RUN addgroup -S -g 1001 spring && adduser -S -u 1001 spring -G spring
+COPY --from=builder /src/build/libs/*.jar app.jar
 
-USER spring:spring
+USER 1001:1001
 EXPOSE 8000
 
 ENV SPRING_PROFILES_ACTIVE=prod

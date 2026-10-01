@@ -2,6 +2,8 @@
 
 성균관대학교 동문 서비스의 Spring Boot 백엔드입니다.
 
+새 클러스터 병행 배포는 [플랫폼 배포 가이드](docs/platform-deployment.md)를 참고하세요.
+
 ## 기술 스택
 
 - Java 25 LTS
