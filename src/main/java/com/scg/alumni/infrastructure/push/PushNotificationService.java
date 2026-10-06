@@ -1,6 +1,8 @@
 package com.scg.alumni.infrastructure.push;
 
 import com.google.firebase.FirebaseApp;
+import com.google.firebase.messaging.ApnsConfig;
+import com.google.firebase.messaging.Aps;
 import com.google.firebase.messaging.FirebaseMessaging;
 import com.google.firebase.messaging.FirebaseMessagingException;
 import com.google.firebase.messaging.MessagingErrorCode;
@@ -275,6 +277,11 @@ public class PushNotificationService {
             MulticastMessage message = MulticastMessage.builder()
                     .addAllTokens(batch)
                     .setNotification(Notification.builder().setTitle(title).setBody(body).build())
+                    // iOS 는 aps.sound 가 없으면 배너만 조용히 뜬다. "default" 는 소리를 강제하지 않고
+                    // 기기 설정(무음 스위치, 무음 시 진동, 앱별 알림 사운드)을 그대로 따른다.
+                    .setApnsConfig(ApnsConfig.builder()
+                            .setAps(Aps.builder().setSound("default").build())
+                            .build())
                     .putAllData(data)
                     .build();
             try {
