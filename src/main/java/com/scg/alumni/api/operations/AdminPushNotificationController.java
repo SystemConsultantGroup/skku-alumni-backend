@@ -1,6 +1,6 @@
 package com.scg.alumni.api.operations;
 
-import com.scg.alumni.api.common.CursorPageResponse;
+import com.scg.alumni.api.common.PageResponse;
 import com.scg.alumni.global.security.AuthContext;
 import com.scg.alumni.infrastructure.push.PushNotificationService;
 import com.scg.alumni.infrastructure.push.PushLink;
@@ -68,11 +68,12 @@ public class AdminPushNotificationController {
      * 사람을 고르고 나서야 "0명에게 발송됨"을 보는 것은 화면의 잘못이다.
      */
     @GetMapping("/targets")
-    public CursorPageResponse<Map<String, Object>> findTargets(
+    public PageResponse<Map<String, Object>> findTargets(
             @RequestParam(required = false) String keyword,
             /** 알림이 실제로 닿는 회원만 볼지. 기본은 전체를 보여주고 닿지 않는 이유를 함께 적는다. */
             @RequestParam(required = false) Boolean onlyReachable,
-            @RequestParam(required = false) Long cursor,
+            @RequestParam(required = false) Long officerRoleId,
+            @RequestParam(required = false) Integer page,
             @RequestParam(required = false) Integer size
     ) {
         String normalizedKeyword = normalizeLike(keyword);
@@ -80,7 +81,7 @@ public class AdminPushNotificationController {
         // 불리언 파라미터를 다르게 실어 보내서(H2 는 BOOLEAN, MySQL 은 TINYINT)
         // 조건이 조용히 어긋난다. 다른 목록 API 도 같은 방식으로 껐다 켠다.
         Boolean reachableOnly = Boolean.TRUE.equals(onlyReachable) ? Boolean.TRUE : null;
-        List<Map<String, Object>> rows = jdbcTemplate.query("""
+        return AdminPaging.query(jdbcTemplate, """
                 select u.id, u.name, u.student_id, u.notification_enabled,
                        m.name as major_name,
                        orole.name as officer_role_name,
@@ -100,18 +101,13 @@ public class AdminPushNotificationController {
                 ) dt on dt.user_id = u.id
                 where u.deleted_at is null
                   and u.status = 'ACTIVE'
-                  and (? is null or u.id < ?)
                   and (? is null or lower(u.name) like ? or lower(coalesce(u.student_id, '')) like ?
                        or lower(coalesce(m.name, '')) like ?)
                   and (? is null or (u.notification_enabled = true and coalesce(dt.device_count, 0) > 0))
-                order by u.id desc
-                limit ?
-                """, JdbcResponseMapper.INSTANCE,
-                cursor, cursor,
+                  and (? is null or oh.officer_role_id = ?)
+                """, "order by u.id desc", AdminPaging.args(
                 normalizedKeyword, normalizedKeyword, normalizedKeyword, normalizedKeyword,
-                reachableOnly,
-                CursorPageFactory.queryLimit(size));
-        return CursorPageFactory.from(rows, size);
+                reachableOnly, officerRoleId, officerRoleId), page, size);
     }
 
     /**
@@ -162,22 +158,18 @@ public class AdminPushNotificationController {
 
     /** 지난 발송 내역. 같은 안내를 두 번 보내지 않으려면 무엇을 보냈는지 볼 수 있어야 한다. */
     @GetMapping
-    public CursorPageResponse<Map<String, Object>> findMessages(
-            @RequestParam(required = false) Long cursor,
+    public PageResponse<Map<String, Object>> findMessages(
+            @RequestParam(required = false) Integer page,
             @RequestParam(required = false) Integer size
     ) {
-        List<Map<String, Object>> rows = jdbcTemplate.query("""
+        PageResponse<Map<String, Object>> result = AdminPaging.query(jdbcTemplate, """
                 select pm.id, pm.title, pm.body, pm.link_url, pm.requested_count, pm.target_count, pm.device_count,
                        pm.success_count, pm.failure_count, pm.created_at, a.name as admin_name
                 from push_messages pm
                 join admins a on a.id = pm.admin_id
-                where (? is null or pm.id < ?)
-                order by pm.id desc
-                limit ?
-                """, JdbcResponseMapper.INSTANCE, cursor, cursor, CursorPageFactory.queryLimit(size));
-        CursorPageResponse<Map<String, Object>> page = CursorPageFactory.from(rows, size);
-        attachRecipients(page.items());
-        return page;
+                """, "order by pm.id desc", AdminPaging.args(), page, size);
+        attachRecipients(result.items());
+        return result;
     }
 
     /**

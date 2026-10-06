@@ -85,7 +85,7 @@ class AdminOfficialPostTest {
     }
 
     private java.util.List<Long> postIdsInContentList() {
-        return adminFeatureController.findPosts(null, null, null, null, null, 100).items()
+        return adminFeatureController.findPosts(null, null, null, null, 1, 100).items()
                 .stream()
                 .map(row -> ((Number) row.get("id")).longValue())
                 .toList();

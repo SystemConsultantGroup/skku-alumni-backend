@@ -16,6 +16,21 @@ spring:
     redis:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
+  mail:
+    # 문의 접수 알림을 보내는 SMTP. host 가 비어 있으면 메일 발송이 꺼진다(로컬·테스트).
+    # scg.skku.ac.kr 자체 메일 서버는 587(STARTTLS)만 열려 있다.
+    # 서버 인증서가 만료돼 검증이 실패하면 SPRING_MAIL_PROPERTIES_MAIL_SMTP_SSL_TRUST=mail.scg.skku.ac.kr
+    # 환경 변수로 그 호스트만 신뢰하게 할 수 있다. 인증서를 갱신하는 편이 먼저다.
+    host: ${MAIL_HOST:}
+    port: ${MAIL_PORT:587}
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_PASSWORD:}
+    properties:
+      mail.smtp.auth: true
+      mail.smtp.starttls.enable: true
+      mail.smtp.connectiontimeout: 10000
+      mail.smtp.timeout: 20000
+      mail.smtp.writetimeout: 20000
   servlet:
     multipart:
       # 여기는 백스톱이다. 실제 정책은 각 엔드포인트가 정한다.
@@ -61,4 +76,10 @@ auth:
   cookie-domain: ${AUTH_COOKIE_DOMAIN:}
   # 회원용 웹 주소. 비밀번호 재설정 링크가 이 주소로 만들어진다. prod·dev 프로필에서 덮어쓴다.
   member-web-url: ${AUTH_MEMBER_WEB_URL:http://localhost:4000}
+  # 관리자 웹 주소. 문의 알림 메일의 [답변하기] 버튼이 이 주소로 연결된다.
+  admin-web-url: ${AUTH_ADMIN_WEB_URL:http://localhost:3001}
   password-reset-link-ttl: ${AUTH_PASSWORD_RESET_LINK_TTL:72h}
+
+inquiry:
+  # 문의 접수 알림 메일의 보내는 주소.
+  mail-from: ${INQUIRY_MAIL_FROM:scg@scg.skku.ac.kr}

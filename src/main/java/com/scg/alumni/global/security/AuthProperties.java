@@ -54,6 +54,9 @@ public class AuthProperties {
      */
     private String memberWebUrl = "http://localhost:4000";
 
+    /** 관리자 웹 주소. 문의 알림 메일의 [답변하기] 버튼이 가리킨다. */
+    private String adminWebUrl = "http://localhost:3001";
+
     /**
      * 재설정 링크의 수명. 사무처가 문자로 보내고 회원이 퇴근 후에 열어보는 일이 흔해
      * 몇십 분으로는 모자란다. 대신 한 번 쓰면 사라지고, 다시 발급하면 앞의 링크가 죽는다.
@@ -131,6 +134,14 @@ public class AuthProperties {
 
     public void setMemberWebUrl(String memberWebUrl) {
         this.memberWebUrl = memberWebUrl;
+    }
+
+    public String getAdminWebUrl() {
+        return adminWebUrl;
+    }
+
+    public void setAdminWebUrl(String adminWebUrl) {
+        this.adminWebUrl = adminWebUrl;
     }
 
     public Duration getPasswordResetLinkTtl() {

@@ -1,6 +1,6 @@
 package com.scg.alumni.api.operations;
 
-import com.scg.alumni.api.common.CursorPageResponse;
+import com.scg.alumni.api.common.PageResponse;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
@@ -47,16 +47,16 @@ public class AdminCompanyController {
             "createdAt", "c.created_at");
 
     @GetMapping
-    public CursorPageResponse<Map<String, Object>> findCompanies(
+    public PageResponse<Map<String, Object>> findCompanies(
             @RequestParam(required = false) String keyword,
             @RequestParam(required = false) Long industryId,
             @RequestParam(required = false) String sort,
             @RequestParam(required = false) String order,
-            @RequestParam(required = false) Long cursor,
+            @RequestParam(required = false) Integer page,
             @RequestParam(required = false) Integer size
     ) {
         String like = normalizeLike(keyword);
-        List<Map<String, Object>> rows = jdbcTemplate.query("""
+        return AdminPaging.query(jdbcTemplate, """
                 select c.id, c.name, c.work_zipcode, c.work_address1, c.work_address2,
                        c.description, c.industry_id, i.name as industry_name, c.created_at,
                        (
@@ -68,13 +68,8 @@ public class AdminCompanyController {
                 where c.deleted_at is null
                   and (? is null or lower(c.name) like ? or lower(coalesce(c.work_address1, '')) like ?)
                   and (? is null or c.industry_id = ?)
-                %s
-                limit ? offset ?
-                """.formatted(AdminTableSort.orderBy(COMPANY_SORTS, sort, order, "c.id")),
-                JdbcResponseMapper.INSTANCE,
-                like, like, like, industryId, industryId,
-                CursorPageFactory.queryLimit(size), AdminTableSort.offset(cursor));
-        return AdminTableSort.page(rows, cursor, size);
+                """, AdminTableSort.orderBy(COMPANY_SORTS, sort, order, "c.id"),
+                AdminPaging.args(like, like, like, industryId, industryId), page, size);
     }
 
     @GetMapping("/{id}")
