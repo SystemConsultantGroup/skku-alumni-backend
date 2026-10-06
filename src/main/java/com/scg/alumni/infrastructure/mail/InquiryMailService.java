@@ -4,11 +4,14 @@ import com.scg.alumni.domain.inquiry.InquiryCategory;
 import com.scg.alumni.global.security.AuthProperties;
 import jakarta.mail.internet.MimeMessage;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.ByteArrayResource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.mail.javamail.MimeMessageHelper;
@@ -33,6 +36,7 @@ public class InquiryMailService {
     private final JdbcTemplate jdbcTemplate;
     private final ObjectProvider<JavaMailSender> mailSender;
     private final AuthProperties authProperties;
+    private final InquiryImagePreview imagePreview;
     private final String mailHost;
     private final String from;
 
@@ -40,11 +44,13 @@ public class InquiryMailService {
             JdbcTemplate jdbcTemplate,
             ObjectProvider<JavaMailSender> mailSender,
             AuthProperties authProperties,
+            InquiryImagePreview imagePreview,
             @Value("${spring.mail.host:}") String mailHost,
             @Value("${inquiry.mail-from:scg@scg.skku.ac.kr}") String from) {
         this.jdbcTemplate = jdbcTemplate;
         this.mailSender = mailSender;
         this.authProperties = authProperties;
+        this.imagePreview = imagePreview;
         this.mailHost = mailHost;
         this.from = from;
     }
@@ -78,9 +84,22 @@ public class InquiryMailService {
                 join users u on u.id = i.user_id
                 where i.id = ?
                 """, inquiryId);
-        List<InquiryMailTemplate.Attachment> attachments = jdbcTemplate.query("""
-                select original_name, size_bytes from inquiry_attachments where inquiry_id = ? order by id
-                """, (rs, rowNum) -> new InquiryMailTemplate.Attachment(rs.getString(1), rs.getLong(2)), inquiryId);
+        // 미리보기는 받는 사람마다 다시 만들 이유가 없다. 한 번 만들어 모든 수신자에게 싣는다.
+        Map<String, byte[]> previews = new LinkedHashMap<>();
+        List<InquiryMailTemplate.Attachment> attachments = new ArrayList<>();
+        jdbcTemplate.query("""
+                select id, original_name, object_name, size_bytes from inquiry_attachments where inquiry_id = ? order by id
+                """, rs -> {
+            String name = rs.getString("original_name");
+            long size = rs.getLong("size_bytes");
+            String cid = null;
+            var thumbnail = imagePreview.thumbnail(name, rs.getString("object_name"), size);
+            if (thumbnail.isPresent()) {
+                cid = "attachment-" + rs.getLong("id");
+                previews.put(cid, thumbnail.get());
+            }
+            attachments.add(new InquiryMailTemplate.Attachment(name, size, cid));
+        }, inquiryId);
 
         InquiryMailTemplate.Model model = new InquiryMailTemplate.Model(
                 inquiryId,
@@ -104,6 +123,10 @@ public class InquiryMailService {
                 helper.setTo(recipient);
                 helper.setSubject(InquiryMailTemplate.subject(model));
                 helper.setText(InquiryMailTemplate.text(model), InquiryMailTemplate.html(model));
+                // 인라인 파트는 본문을 지정한 뒤에 붙여야 같은 multipart/related 안에 들어간다.
+                for (Map.Entry<String, byte[]> preview : previews.entrySet()) {
+                    helper.addInline(preview.getKey(), new ByteArrayResource(preview.getValue()), "image/jpeg");
+                }
                 sender.send(message);
                 log.info("문의 알림 메일을 보냈습니다. inquiryId={}", inquiryId);
             } catch (Exception exception) {

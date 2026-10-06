@@ -33,7 +33,13 @@ public final class InquiryMailTemplate {
     ) {
     }
 
-    public record Attachment(String name, long size) {
+    /**
+     * @param previewCid 메일에 인라인으로 실은 미리보기 이미지의 Content-ID. 없으면 이름만 보인다.
+     */
+    public record Attachment(String name, long size, String previewCid) {
+        public Attachment(String name, long size) {
+            this(name, size, null);
+        }
     }
 
     public static String subject(Model model) {
@@ -55,10 +61,23 @@ public final class InquiryMailTemplate {
             files.append("<span style=\"color:#71717a;\">첨부 파일 없음</span>");
         } else {
             for (Attachment attachment : model.attachments()) {
-                files.append("<div style=\"padding:6px 0;border-bottom:1px solid #f4f4f5;\">")
-                        .append("&#128206; ").append(esc(attachment.name()))
-                        .append(" <span style=\"color:#71717a;\">(").append(esc(formatSize(attachment.size()))).append(")</span>")
-                        .append("</div>");
+                files.append("<div style=\"padding:8px 0;border-bottom:1px solid #f4f4f5;\">")
+                        .append(InquiryImagePreview.isVideo(attachment.name()) ? "&#127916; " : "&#128206; ")
+                        .append(esc(attachment.name()))
+                        .append(" <span style=\"color:#71717a;\">(").append(esc(formatSize(attachment.size()))).append(")</span>");
+                if (attachment.previewCid() != null) {
+                    // 누르면 관리자 화면의 문의로 간다. 거기서 원본을 크게 보거나 내려받는다.
+                    files.append("<div style=\"margin-top:8px;\"><a href=\"").append(esc(model.replyUrl())).append("\">")
+                            .append("<img src=\"cid:").append(esc(attachment.previewCid())).append("\" alt=\"")
+                            .append(esc(attachment.name()))
+                            .append("\" style=\"display:block;max-width:100%;height:auto;border:1px solid #e4e4e7;border-radius:8px;\">")
+                            .append("</a></div>");
+                } else if (InquiryImagePreview.isVideo(attachment.name())) {
+                    // 메일 클라이언트는 영상을 재생하지 못한다. 재생은 관리자 화면에서 한다.
+                    files.append("<div style=\"margin-top:6px;font-size:12px;color:#71717a;\">")
+                            .append("영상은 메일에서 재생되지 않습니다. 답변하기를 눌러 관리자 화면에서 재생하세요.</div>");
+                }
+                files.append("</div>");
             }
         }
 
@@ -94,7 +113,7 @@ public final class InquiryMailTemplate {
                       </td></tr>
                       <tr><td align="center" style="padding:0 32px 28px 32px;font-size:12px;color:#a1a1aa;line-height:1.6;">
                         버튼을 누르면 관리자 사이트의 이 문의 화면으로 이동합니다. 로그인이 필요하면 로그인 뒤에 바로 열립니다.<br>
-                        첨부 파일은 관리자 화면에서 내려받을 수 있습니다.
+                        원본 첨부 파일은 관리자 화면에서 크게 보거나 내려받을 수 있습니다.
                       </td></tr>
                     </table>
                     <div style="font-size:11px;color:#a1a1aa;margin-top:16px;font-family:Arial,sans-serif;">문의 #%7$d · 이 메일은 발신 전용입니다.</div>
