@@ -82,7 +82,7 @@ class AdminPushNotificationTest {
                 "총회 장소 변경", "본관 2층으로 옮겼습니다.", List.of(member), null));
         Long messageId = (Long) result.get("id");
 
-        Map<String, Object> saved = controller.findMessages(null, 10).items().stream()
+        Map<String, Object> saved = controller.findMessages(1, 10).items().stream()
                 .filter(row -> ((Number) row.get("id")).longValue() == messageId)
                 .findFirst()
                 .orElseThrow();
@@ -176,7 +176,7 @@ class AdminPushNotificationTest {
     }
 
     private List<Long> targetIds(Boolean onlyReachable) {
-        return controller.findTargets(null, onlyReachable, null, 50).items().stream()
+        return controller.findTargets(null, onlyReachable, null, 1, 100).items().stream()
                 .map(row -> ((Number) row.get("id")).longValue())
                 .toList();
     }

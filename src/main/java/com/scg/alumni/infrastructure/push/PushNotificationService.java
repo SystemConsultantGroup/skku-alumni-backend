@@ -7,6 +7,7 @@ import com.google.firebase.messaging.MessagingErrorCode;
 import com.google.firebase.messaging.MulticastMessage;
 import com.google.firebase.messaging.Notification;
 import com.google.firebase.messaging.SendResponse;
+import java.sql.PreparedStatement;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -14,6 +15,8 @@ import java.util.Map;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.support.GeneratedKeyHolder;
+import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
@@ -58,8 +61,20 @@ public class PushNotificationService {
                   and u.notification_enabled = true
                   and u.notice_notification_enabled = true
                 """, String.class);
-        send(tokens, "NOTICE".equals(postKind) ? "새 공지" : "새 소식", title,
-                Map.of("type", "official-post", "postKind", postKind, "postId", String.valueOf(postId)));
+        String pushTitle = "NOTICE".equals(postKind) ? "새 공지" : "새 소식";
+        // 알림 센터에는 기기가 없는 회원도 받는다. 푸시는 기기로, 센터는 계정으로 닿는다.
+        List<Long> recipients = jdbcTemplate.queryForList("""
+                select u.id
+                from users u
+                where u.deleted_at is null
+                  and u.status = 'ACTIVE'
+                  and u.notification_enabled = true
+                  and u.notice_notification_enabled = true
+                """, Long.class);
+        Long notificationId = createNotification("official-post", pushTitle, title, "/notices/" + postId, null, recipients);
+        send(tokens, pushTitle, title,
+                Map.of("type", "official-post", "postKind", postKind, "postId", String.valueOf(postId),
+                        "notificationId", String.valueOf(notificationId)));
     }
 
     /**
@@ -85,11 +100,27 @@ public class PushNotificationService {
                   and u.club_notification_enabled = true
                   and u.id <> ?
                 """, String.class, clubId, authorId);
+        List<Long> recipients = jdbcTemplate.queryForList("""
+                select u.id
+                from users u
+                join club_members cm on cm.user_id = u.id
+                where u.deleted_at is null
+                  and cm.club_id = ?
+                  and cm.left_at is null and cm.deleted_at is null
+                  and u.status = 'ACTIVE'
+                  and u.notification_enabled = true
+                  and u.club_notification_enabled = true
+                  and u.id <> ?
+                """, Long.class, clubId, authorId);
+        String section = "RESEARCH".equals(clubCategory) ? "research" : "club";
+        Long notificationId = createNotification("club-post", clubName, title,
+                "/community/" + section + "/" + clubId + "/posts/" + postId, null, recipients);
         send(tokens, clubName, title, Map.of(
                 "type", "club-post",
                 "clubId", String.valueOf(clubId),
                 "clubCategory", clubCategory == null ? "" : clubCategory,
-                "postId", String.valueOf(postId)));
+                "postId", String.valueOf(postId),
+                "notificationId", String.valueOf(notificationId)));
     }
 
     /**
@@ -129,14 +160,98 @@ public class PushNotificationService {
             tokens.add((String) row.get("token"));
         }
 
+        // 알림 센터에는 기기를 등록하지 않은 회원도 받는다. 알림을 끈 회원만 뺀다.
+        List<Long> recipients = jdbcTemplate.queryForList("""
+                select u.id
+                from users u
+                where u.id in (%s)
+                  and u.deleted_at is null
+                  and u.status = 'ACTIVE'
+                  and u.notification_enabled = true
+                """.formatted(placeholders), Long.class, memberIds.toArray());
+        Long notificationId = createNotification("admin-message", title, body,
+                link == null ? null : link.path(), link == null ? null : link.externalUrl(), recipients);
+
         Map<String, String> data = new LinkedHashMap<>();
         data.put("type", "admin-message");
+        data.put("notificationId", String.valueOf(notificationId));
         if (link != null) {
             data.putAll(link.payload());
+        } else {
+            // 걸린 링크가 없으면 눌러도 홈만 열려 내용을 볼 수 없었다. 알림 센터의 이 알림으로
+            // 데려가 내용을 모달로 띄운다. 앱은 admin-message 의 path 를 그대로 열므로
+            // 이미 설치된 앱도 고치지 않고 동작한다.
+            data.put("path", "/notifications?open=" + notificationId);
         }
         SendOutcome outcome = send(tokens, title, body, data);
         return new DirectSendResult(devicesByMember, tokens.size(), outcome.successCount(), outcome.failureCount(),
                 outcome.dispatched());
+    }
+
+    /**
+     * 알림 한 건과 받는 회원별 안 읽음 행을 남긴다. 발송보다 먼저 호출한다 — 푸시에 알림
+     * 번호를 실어 보내야 눌렀을 때 그 알림을 찾아 열 수 있다.
+     *
+     * <p>푸시 발송 성공 여부와 무관하게 남긴다. 센터는 기기가 아니라 계정에 닿는 통로다.
+     */
+    private Long createNotification(String type, String title, String body, String linkPath, String linkUrl,
+                                    List<Long> recipientIds) {
+        KeyHolder keyHolder = new GeneratedKeyHolder();
+        jdbcTemplate.update(connection -> {
+            PreparedStatement statement = connection.prepareStatement("""
+                    insert into notifications (type, title, body, link_path, link_url, created_at)
+                    values (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    """, new String[]{"id"});
+            statement.setString(1, type);
+            statement.setString(2, title);
+            statement.setString(3, body);
+            statement.setString(4, linkPath);
+            statement.setString(5, linkUrl);
+            return statement;
+        }, keyHolder);
+        // 키 컬럼을 id 로 못박아야 DB 마다 같은 모양으로 온다(H2 는 전 컬럼을, MySQL 은 GENERATED_KEY 를 준다).
+        Long notificationId = keyHolder.getKey().longValue();
+        jdbcTemplate.batchUpdate("""
+                insert into user_notifications (notification_id, user_id, created_at)
+                values (?, ?, CURRENT_TIMESTAMP)
+                """, recipientIds.stream().distinct().map(userId -> new Object[]{notificationId, userId}).toList());
+        return notificationId;
+    }
+
+    /**
+     * 사무처가 문의에 답했음을 문의한 회원에게 알린다.
+     *
+     * <p>알림 센터에는 항상 남기고, 휴대전화 푸시는 알림을 켜 둔 회원에게만 보낸다. 눌렀을 때는
+     * 그 문의의 답변 화면(/inquiries/{id})을 연다. 앱은 admin-message 의 path 를 앱 안에서
+     * 그대로 열기 때문에 네이티브 앱을 고치지 않아도 된다.
+     */
+    @Async
+    public void notifyInquiryAnswer(Long userId, Long inquiryId, String inquiryTitle) {
+        deliverInquiryAnswer(userId, inquiryId, inquiryTitle);
+    }
+
+    /** {@link #notifyInquiryAnswer} 의 본체. 비동기 래퍼 없이 같은 스레드에서 돈다. */
+    void deliverInquiryAnswer(Long userId, Long inquiryId, String inquiryTitle) {
+        List<Long> recipients = jdbcTemplate.queryForList("""
+                select u.id from users u
+                where u.id = ? and u.deleted_at is null and u.status = 'ACTIVE'
+                """, Long.class, userId);
+        if (recipients.isEmpty()) {
+            return;
+        }
+        String path = "/inquiries/" + inquiryId;
+        String title = "문의하신 내용에 답변이 달렸습니다";
+        Long notificationId = createNotification("inquiry-answer", title, inquiryTitle, path, null, recipients);
+        List<String> tokens = jdbcTemplate.queryForList("""
+                select dt.token
+                from device_tokens dt
+                join users u on u.id = dt.user_id
+                where dt.deleted_at is null and u.id = ? and u.notification_enabled = true
+                """, String.class, userId);
+        send(tokens, title, inquiryTitle, Map.of(
+                "type", "admin-message",
+                "path", path,
+                "notificationId", String.valueOf(notificationId)));
     }
 
     private SendOutcome send(List<String> tokens, String title, String body, Map<String, String> data) {

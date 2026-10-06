@@ -1,6 +1,6 @@
 package com.scg.alumni.api.operations;
 
-import com.scg.alumni.api.common.CursorPageResponse;
+import com.scg.alumni.api.common.PageResponse;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
@@ -45,15 +45,15 @@ public class AdminHobbyController {
             "createdAt", "h.created_at");
 
     @GetMapping
-    public CursorPageResponse<Map<String, Object>> findHobbies(
+    public PageResponse<Map<String, Object>> findHobbies(
             @RequestParam(required = false) String keyword,
             @RequestParam(required = false) String sort,
             @RequestParam(required = false) String order,
-            @RequestParam(required = false) Long cursor,
+            @RequestParam(required = false) Integer page,
             @RequestParam(required = false) Integer size
     ) {
         String like = normalizeLike(keyword);
-        List<Map<String, Object>> rows = jdbcTemplate.query("""
+        return AdminPaging.query(jdbcTemplate, """
                 select h.id, h.name, h.created_at,
                        (
                            select count(*)
@@ -64,12 +64,8 @@ public class AdminHobbyController {
                 from hobbies h
                 where h.deleted_at is null
                   and (? is null or lower(h.name) like ?)
-                %s
-                limit ? offset ?
-                """.formatted(AdminTableSort.orderBy(HOBBY_SORTS, sort, order, "h.id")),
-                JdbcResponseMapper.INSTANCE,
-                like, like, CursorPageFactory.queryLimit(size), AdminTableSort.offset(cursor));
-        return AdminTableSort.page(rows, cursor, size);
+                """, AdminTableSort.orderBy(HOBBY_SORTS, sort, order, "h.id"),
+                AdminPaging.args(like, like), page, size);
     }
 
     @GetMapping("/{id}")
