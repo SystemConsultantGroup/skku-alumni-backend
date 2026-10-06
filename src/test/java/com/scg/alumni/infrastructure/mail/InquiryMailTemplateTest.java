@@ -44,4 +44,37 @@ class InquiryMailTemplateTest {
         assertThat(InquiryMailTemplate.text(model("회비 문의", "본문")))
                 .contains("https://admin.alumni.scg.skku.ac.kr/inquiries/7", "견적서.pdf");
     }
+
+    private InquiryMailTemplate.Model modelWith(List<InquiryMailTemplate.Attachment> attachments) {
+        return new InquiryMailTemplate.Model(7L, "기타·건의", "제목", "본문", "김성균", "2020123456",
+                "010-1234-5678", "kim@example.com", "2026-10-04 22:00", attachments,
+                "https://admin.alumni.scg.skku.ac.kr/inquiries/7");
+    }
+
+    /** 미리보기가 있는 이미지는 cid 로 본문에 끼워 넣고, 누르면 문의 화면으로 간다. */
+    @Test
+    void imagePreviewIsInlinedByContentId() {
+        String html = InquiryMailTemplate.html(modelWith(List.of(
+                new InquiryMailTemplate.Attachment("사진.jpg", 2048, "attachment-3"))));
+
+        assertThat(html).contains("<img src=\"cid:attachment-3\"").contains("사진.jpg");
+    }
+
+    /** 영상은 메일에서 재생되지 않는다. 미리보기 대신 어디서 재생하는지 알려 준다. */
+    @Test
+    void videoGetsAHintInsteadOfAPlayer() {
+        String html = InquiryMailTemplate.html(modelWith(List.of(
+                new InquiryMailTemplate.Attachment("현장.mp4", 20 * 1024 * 1024))));
+
+        assertThat(html).contains("현장.mp4", "영상은 메일에서 재생되지 않습니다").doesNotContain("<video").doesNotContain("<img");
+    }
+
+    /** 파일 이름은 올린 사람이 정한다. 이미지 태그의 속성으로 들어가도 빠져나오면 안 된다. */
+    @Test
+    void attachmentNameCannotBreakOutOfTheImageTag() {
+        String html = InquiryMailTemplate.html(modelWith(List.of(
+                new InquiryMailTemplate.Attachment("a\" onerror=\"alert(1).png", 10, "attachment-1"))));
+
+        assertThat(html).doesNotContain("onerror=\"alert(1)").contains("&quot; onerror=&quot;alert(1)");
+    }
 }
