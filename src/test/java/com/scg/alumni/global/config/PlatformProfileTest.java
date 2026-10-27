@@ -19,17 +19,17 @@ class PlatformProfileTest {
             .withUserConfiguration(ProfileConfiguration.class);
 
     @Test
-    void platformOverridesProductionUrlsAndCookieNames() {
+    void platformOverridesProductionUrlsAndKeepsDefaultCookieNames() {
         runner.withPropertyValues("spring.profiles.active=prod,platform").run(context -> {
             assertThat(context).hasNotFailed();
             AuthProperties auth = context.getBean(AuthProperties.class);
             assertThat(auth.getMemberWebUrl()).isEqualTo("https://test.alumni.scg.skku.ac.kr");
             assertThat(auth.getAdminWebUrl()).isEqualTo("https://admin.test.alumni.scg.skku.ac.kr");
             assertThat(auth.getCookieDomain()).isEqualTo("test.alumni.scg.skku.ac.kr");
-            assertThat(auth.getMemberAccessCookieName()).isEqualTo("platform_member_access_token");
-            assertThat(auth.getMemberRefreshCookieName()).isEqualTo("platform_member_refresh_token");
-            assertThat(auth.getAdminAccessCookieName()).isEqualTo("platform_admin_access_token");
-            assertThat(auth.getAdminRefreshCookieName()).isEqualTo("platform_admin_refresh_token");
+            assertThat(auth.getMemberAccessCookieName()).isEqualTo("member_access_token");
+            assertThat(auth.getMemberRefreshCookieName()).isEqualTo("member_refresh_token");
+            assertThat(auth.getAdminAccessCookieName()).isEqualTo("admin_access_token");
+            assertThat(auth.getAdminRefreshCookieName()).isEqualTo("admin_refresh_token");
 
             var request = new MockHttpServletRequest("OPTIONS", "/api/v1/auth/member/login");
             var cors = context.getBean(CorsConfigurationSource.class).getCorsConfiguration(request);

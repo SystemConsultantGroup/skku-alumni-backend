@@ -49,10 +49,9 @@ DB 계정이 준비되지 않으면 인프라 설정이 컨테이너 시작을 �
 | API | `https://api.test.alumni.scg.skku.ac.kr` |
 
 쿠키 도메인은 `test.alumni.scg.skku.ac.kr`이고, 네 인증 쿠키 이름은
-`platform_member_access_token`, `platform_member_refresh_token`,
-`platform_admin_access_token`, `platform_admin_refresh_token`입니다.
-기존 운영 도메인의 부모 쿠키나 기존 개발 쿠키와 이름이 겹치지 않게 구분합니다.
-유저 프론트의 서버 렌더링도 같은 회원 쿠키 이름을 사용해야 합니다.
+`member_access_token`, `member_refresh_token`,
+`admin_access_token`, `admin_refresh_token`으로 기존 이름을 그대로 사용합니다.
+프론트 쿠키 처리 코드 변경은 필요하지 않습니다.
 
 이 백엔드 PR을 먼저 머지하고 플랫폼 이미지 lock이 갱신된 뒤, 프론트와 인프라 PR을
 머지합니다. DNS와 HTTPS 인증서 발급은 별도로 완료해야 합니다.
