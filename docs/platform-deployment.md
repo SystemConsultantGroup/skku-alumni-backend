@@ -38,6 +38,24 @@ DB 비밀번호 등은 이미지에 넣지 않고 Vault로 주입합니다.
 Spring Boot 기본 환경변수 `SPRING_DATA_REDIS_PASSWORD`를 사용합니다.
 DB 계정이 준비되지 않으면 인프라 설정이 컨테이너 시작을 차단합니다.
 
+새 클러스터는 `SPRING_PROFILES_ACTIVE=prod,platform`으로 실행합니다.
+`platform`을 뒤에 지정해 `application-platform.yml`의 CORS, 쿠키, 링크 설정이
+기존 `prod` 설정을 덮어쓰게 합니다. 기존 서버는 계속 `prod`만 사용합니다.
+
+| 대상 | 새 클러스터 주소 |
+| --- | --- |
+| 회원 웹·비밀번호 재설정 링크 | `https://test.alumni.scg.skku.ac.kr` |
+| 어드민 웹·문의 답변 링크 | `https://admin.test.alumni.scg.skku.ac.kr` |
+| API | `https://api.test.alumni.scg.skku.ac.kr` |
+
+쿠키 도메인은 `test.alumni.scg.skku.ac.kr`이고, 네 인증 쿠키 이름은
+`member_access_token`, `member_refresh_token`,
+`admin_access_token`, `admin_refresh_token`으로 기존 이름을 그대로 사용합니다.
+프론트 쿠키 처리 코드 변경은 필요하지 않습니다.
+
+이 백엔드 PR을 먼저 머지하고 플랫폼 이미지 lock이 갱신된 뒤, 프론트와 인프라 PR을
+머지합니다. DNS와 HTTPS 인증서 발급은 별도로 완료해야 합니다.
+
 Dockerfile은 Java 25 빌더에서 bootJar를 생성한 뒤 숫자 UID 1001로 실행합니다.
 기존 CD에서 실행하는 Gradle 테스트는 유지합니다. Docker 빌드 자체는 테스트를
 대체하지 않습니다. 새 클러스터는 기존 production 데이터를 공유하지 않습니다.

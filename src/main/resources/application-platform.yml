@@ -1,0 +1,14 @@
+spring:
+  config:
+    activate:
+      on-profile: platform
+
+cors:
+  allowed-origins: >-
+    https://test.alumni.scg.skku.ac.kr,
+    https://admin.test.alumni.scg.skku.ac.kr
+
+auth:
+  member-web-url: https://test.alumni.scg.skku.ac.kr
+  admin-web-url: https://admin.test.alumni.scg.skku.ac.kr
+  cookie-domain: test.alumni.scg.skku.ac.kr
