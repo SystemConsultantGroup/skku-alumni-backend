@@ -5,6 +5,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -22,6 +23,7 @@ import org.springframework.web.server.ResponseStatusException;
 public class OfficerAssignment {
 
     private final JdbcTemplate jdbcTemplate;
+    private final com.scg.alumni.domain.access.AccessCacheInvalidation invalidation;
 
     /** 직책 이름으로 id를 찾는다. 공백과 대소문자는 무시한다. */
     public Long findRoleId(String roleName) {
@@ -72,26 +74,53 @@ public class OfficerAssignment {
      * <p>이미 있는 임기면 직책만 바꾸고 납부 여부는 그대로 둔다. 명단을 다시
      * 부었다고 이미 확인한 납부가 미납으로 돌아가면 안 된다.
      */
+    @Transactional
     public void ensureHistory(Long memberId, Long officerTermId, Long officerRoleId) {
+        invalidation.afterCommit(memberId);
+        preservePreviousRole(memberId, officerTermId, officerRoleId);
         int updated = jdbcTemplate.update("""
                 update officer_histories
-                set officer_role_id = ?, deleted_at = null, updated_at = CURRENT_TIMESTAMP
-                where user_id = ? and officer_term_id = ?
+                set officer_role_id = ?, updated_at = CURRENT_TIMESTAMP
+                where user_id = ? and officer_term_id = ? and deleted_at is null
                 """, officerRoleId, memberId, officerTermId);
         if (updated > 0) {
             return;
+        }
+        Integer deleted = jdbcTemplate.queryForObject("""
+                select count(*) from officer_histories where user_id = ? and officer_term_id = ? and deleted_at is not null
+                """, Integer.class, memberId, officerTermId);
+        if (deleted != null && deleted > 0) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Deleted officer history requires manual review");
         }
         jdbcTemplate.update("""
                 insert into officer_histories (
                     user_id, officer_term_id, officer_role_id, started_at, payment_status, created_at, updated_at
                 )
-                select ?, id, ?, started_at, 'UNPAID', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-                from officer_terms
-                where id = ?
+                select ?, t.id, ?, t.started_at, 'UNPAID', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                from officer_terms t
+                where t.id = ?
                 """, memberId, officerRoleId, officerTermId);
     }
 
+    /** Records the previous stored values; no unrecorded change date is inferred. */
+    @Transactional
+    public void preservePreviousRole(Long memberId, Long officerTermId, Long newRoleId) {
+        var oldRoles = jdbcTemplate.query("""
+                select officer_role_id from officer_histories
+                where user_id = ? and officer_term_id = ? and deleted_at is null for update
+                """, (rs, row) -> rs.getLong(1), memberId, officerTermId);
+        if (!oldRoles.isEmpty() && !oldRoles.get(0).equals(newRoleId)) {
+            jdbcTemplate.update("""
+                    insert into officer_role_change_history
+                        (officer_history_id, user_id, officer_term_id, officer_role_id, started_at, ended_at)
+                    select id, user_id, officer_term_id, officer_role_id, started_at, ended_at
+                    from officer_histories where user_id = ? and officer_term_id = ? and deleted_at is null
+                    """, memberId, officerTermId);
+        }
+    }
+
     /** 회비 내역이 없으면 직책별 기여금으로 만든다. 이미 있으면 금액을 건드리지 않는다. */
+    @Transactional
     public void ensurePaymentRecord(Long memberId, Long officerTermId, Long officerRoleId) {
         Integer count = jdbcTemplate.queryForObject("""
                 select count(*)
@@ -99,24 +128,45 @@ public class OfficerAssignment {
                 where user_id = ? and officer_term_id = ?
                 """, Integer.class, memberId, officerTermId);
         if (count != null && count > 0) {
-            jdbcTemplate.update("""
-                    update payment_records
-                    set deleted_at = null, updated_at = CURRENT_TIMESTAMP
-                    where user_id = ? and officer_term_id = ? and deleted_at is not null
-                    """, memberId, officerTermId);
+            Integer deleted = jdbcTemplate.queryForObject("""
+                    select count(*) from payment_records where user_id = ? and officer_term_id = ? and deleted_at is not null
+                    """, Integer.class, memberId, officerTermId);
+            if (deleted != null && deleted > 0) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT, "Deleted payment record requires manual review");
+            }
             return;
+        }
+        Integer legacyPaid = jdbcTemplate.queryForObject("""
+                select count(*) from officer_histories
+                where user_id = ? and officer_term_id = ? and payment_status = 'PAID' and deleted_at is null
+                """, Integer.class, memberId, officerTermId);
+        if (legacyPaid != null && legacyPaid > 0) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Missing payment record for legacy paid history requires review");
         }
         jdbcTemplate.update("""
                 insert into payment_records (
                     user_id, officer_term_id, amount, status, created_at, updated_at
                 ) values (?, ?, ?, 'UNPAID', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """, memberId, officerTermId, duesAmount(officerRoleId));
+        invalidation.afterCommit(memberId);
     }
 
     /** 직책과 회비를 함께 붙인다. */
+    @Transactional
     public void assign(Long memberId, Long officerTermId, Long officerRoleId) {
         ensureHistory(memberId, officerTermId, officerRoleId);
         ensurePaymentRecord(memberId, officerTermId, officerRoleId);
+        recordApproval(memberId, officerTermId);
+    }
+
+    public void recordApproval(Long memberId, Long officerTermId) {
+        invalidation.afterCommit(memberId);
+        jdbcTemplate.update("""
+                insert into officer_history_approvals (officer_history_id)
+                select h.id from officer_histories h where h.user_id = ? and h.officer_term_id = ?
+                  and h.deleted_at is null and not exists
+                    (select 1 from officer_history_approvals a where a.officer_history_id = h.id)
+                """, memberId, officerTermId);
     }
 
     /**

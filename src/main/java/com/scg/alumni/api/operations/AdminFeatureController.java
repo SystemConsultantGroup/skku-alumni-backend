@@ -3,6 +3,7 @@ package com.scg.alumni.api.operations;
 import com.scg.alumni.api.common.StoredImageUrl;
 import com.scg.alumni.api.common.PageResponse;
 import com.scg.alumni.api.common.MarkdownImageExtractor;
+import com.scg.alumni.domain.organization.AdministrativePersonService;
 import com.scg.alumni.global.security.AdminRoleGuard;
 import com.scg.alumni.global.security.AuthContext;
 import com.scg.alumni.infrastructure.push.PushNotificationService;
@@ -48,6 +49,8 @@ public class AdminFeatureController {
     private final AdminRoleGuard adminRoleGuard;
     private final PasswordEncoder passwordEncoder;
     private final OfficerAssignment officerAssignment;
+    private final AdministrativePersonService administrativePeople;
+    private final com.scg.alumni.domain.access.AccessCacheInvalidation invalidation;
 
     @GetMapping("/dashboard")
     public Map<String, Object> findDashboard() {
@@ -63,7 +66,8 @@ public class AdminFeatureController {
                         from officer_histories oh
                         join officer_terms ot on ot.id = oh.officer_term_id
                         join users u on u.id = oh.user_id
-                        where oh.deleted_at is null and ot.current_term = true and oh.payment_status = 'PAID'
+                        join payment_records pr on pr.user_id = oh.user_id and pr.officer_term_id = ot.id and pr.deleted_at is null
+                        where oh.deleted_at is null and ot.current_term = true and pr.status = 'PAID'
                           and u.deleted_at is null and u.status <> 'WITHDRAWN'
                         """),
                 "unpaidCurrentOfficers", count("""
@@ -71,7 +75,8 @@ public class AdminFeatureController {
                         from officer_histories oh
                         join officer_terms ot on ot.id = oh.officer_term_id
                         join users u on u.id = oh.user_id
-                        where oh.deleted_at is null and ot.current_term = true and oh.payment_status = 'UNPAID'
+                        join payment_records pr on pr.user_id = oh.user_id and pr.officer_term_id = ot.id and pr.deleted_at is null
+                        where oh.deleted_at is null and ot.current_term = true and pr.status = 'UNPAID'
                           and u.deleted_at is null and u.status <> 'WITHDRAWN'
                         """),
                 "pendingApplications", count("select count(*) from member_applications where status = 'PENDING'"),
@@ -93,9 +98,10 @@ public class AdminFeatureController {
                 from payment_records pr
                 join officer_terms ot on ot.id = pr.officer_term_id
                 join users u on u.id = pr.user_id and u.deleted_at is null
-                join officer_histories oh on oh.user_id = pr.user_id and oh.officer_term_id = pr.officer_term_id
+                left join officer_histories oh on oh.user_id = pr.user_id and oh.officer_term_id = pr.officer_term_id
                     and oh.deleted_at is null
-                join officer_roles orole on orole.id = oh.officer_role_id
+                left join officer_roles orole on orole.id = oh.officer_role_id
+                where pr.deleted_at is null
                 order by pr.id desc
                 limit 5
                 """, JdbcResponseMapper.INSTANCE));
@@ -133,7 +139,7 @@ public class AdminFeatureController {
                        case when oh.id is not null then ot.generation end as generation,
                        case when oh.id is not null then ot.phase end as phase,
                        orole.name as officer_role_name,
-                       coalesce(oh.payment_status, pr.status) as payment_status
+                       pr.status as payment_status
                 from users u
                 left join majors m on m.id = u.major_id
                 left join companies co on co.id = u.company_id and co.deleted_at is null
@@ -143,8 +149,8 @@ public class AdminFeatureController {
                 left join payment_records pr on pr.user_id = u.id and pr.officer_term_id = ot.id and pr.deleted_at is null
                 where (? = true or u.deleted_at is null)
                   and (? is null or lower(u.name) like ? or lower(m.name) like ? or lower(coalesce(co.name, '')) like ?)
-                  and (? is null or coalesce(oh.payment_status, pr.status) = ?)
-                  and (? is null or u.status = ?)
+                  and (? is null or pr.status = ?)
+                  and (? is null or u.status = ? or (? = true and u.status in ('ACTIVE', 'PENDING')))
                   and (? is null or oh.officer_role_id = ?)
                   and (? = false or u.login_id is null or u.login_id = ''
                        or u.password is null or u.password = '')
@@ -152,7 +158,7 @@ public class AdminFeatureController {
                 showDeleted,
                 normalizedKeyword, normalizedKeyword, normalizedKeyword, normalizedKeyword,
                 normalizedPaymentStatus, normalizedPaymentStatus,
-                normalizedMemberStatus, normalizedMemberStatus,
+                normalizedMemberStatus, normalizedMemberStatus, "ELIGIBLE".equals(normalizedMemberStatus),
                 officerRoleId, officerRoleId,
                 onlyUnregistered), page, size);
     }
@@ -163,10 +169,8 @@ public class AdminFeatureController {
             @PathVariable Long id,
             @Valid @RequestBody StatusUpdateRequest request
     ) {
+        invalidation.afterCommit(id);
         String status = normalizeRequiredStatus(request.status(), "PENDING", "ACTIVE", "REJECTED");
-        if ("ACTIVE".equals(status) && !hasPaidCurrentOfficerFee(id)) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "현행 임기 회비 납부 확인 후 활성화할 수 있습니다.");
-        }
         int updated = jdbcTemplate.update("""
                 update users
                 set status = ?, updated_at = CURRENT_TIMESTAMP
@@ -218,9 +222,20 @@ public class AdminFeatureController {
             @Valid @RequestBody StatusUpdateRequest request
     ) {
         String status = normalizeRequiredStatus(request.status(), "PENDING", "APPROVED", "REJECTED");
+        List<String> currentStatuses = jdbcTemplate.query("select status from member_applications where id = ? for update",
+                (resultSet, rowNum) -> resultSet.getString(1), id);
+        if (currentStatuses.isEmpty()) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Application not found");
+        if (!"PENDING".equals(currentStatuses.get(0))) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Application has already been reviewed");
+        }
         if ("APPROVED".equals(status)) {
-            Long userId = approveApplication(id);
+            ApplicationApproval approval = approveApplication(id, request.officerRoleId(), request.existingUserId(), request.confirmedNoMatch());
+            Long userId = approval.userId();
             audit("APPROVE_APPLICATION", "member_application", id);
+            if (approval.created()) {
+                return Map.of("id", id, "status", status, "userId", userId,
+                        "initialLoginId", administrativePeople.loginId(userId));
+            }
             return Map.of("id", id, "status", status, "userId", userId);
         }
 
@@ -264,10 +279,10 @@ public class AdminFeatureController {
                 from payment_records pr
                 join users u on u.id = pr.user_id and u.deleted_at is null
                 join officer_terms ot on ot.id = pr.officer_term_id
-                join officer_histories oh on oh.user_id = pr.user_id and oh.officer_term_id = pr.officer_term_id
+                left join officer_histories oh on oh.user_id = pr.user_id and oh.officer_term_id = pr.officer_term_id
                     and oh.deleted_at is null
-                join officer_roles orole on orole.id = oh.officer_role_id
-                where (
+                left join officer_roles orole on orole.id = oh.officer_role_id
+                where pr.deleted_at is null and (
                       ? is null
                       or lower(coalesce(u.name, '')) like ?
                       or lower(coalesce(u.student_id, '')) like ?
@@ -355,6 +370,7 @@ public class AdminFeatureController {
     @PostMapping("/payments")
     @Transactional
     public Map<String, Object> registerPayment(@Valid @RequestBody PaymentRegisterRequest request) {
+        invalidation.afterCommit(request.userId());
         String status = normalizeRequiredStatus(request.status(), "PAID", "UNPAID");
         Map<String, Object> term = jdbcTemplate.query("""
                 select id, generation, phase
@@ -374,25 +390,19 @@ public class AdminFeatureController {
         officerAssignment.ensureHistory(request.userId(), request.officerTermId(), officerRoleId);
         officerAssignment.ensurePaymentRecord(request.userId(), request.officerTermId(), officerRoleId);
         // 공직자 부회장(50만원)처럼 예외가 있어 사무처가 금액을 지정할 수 있다.
-        int amount = request.amount() != null ? request.amount() : officerAssignment.duesAmount(officerRoleId);
-        jdbcTemplate.update("""
-                update payment_records set amount = ?, updated_at = CURRENT_TIMESTAMP
-                where user_id = ? and officer_term_id = ?
-                """, amount, request.userId(), request.officerTermId());
+        if (request.amount() != null) {
+            jdbcTemplate.update("""
+                    update payment_records set amount = ?, updated_at = CURRENT_TIMESTAMP
+                    where user_id = ? and officer_term_id = ? and deleted_at is null
+                    """, request.amount(), request.userId(), request.officerTermId());
+        }
 
         jdbcTemplate.update("""
                 update payment_records
-                set status = ?, paid_at = case when ? = 'PAID' then CURRENT_TIMESTAMP else null end, updated_at = CURRENT_TIMESTAMP
+                set status = ?, paid_at = case when ? = 'PAID' then coalesce(paid_at, CURRENT_TIMESTAMP) else paid_at end, updated_at = CURRENT_TIMESTAMP
                 where user_id = ?
                   and officer_term_id = ?
                 """, status, status, request.userId(), request.officerTermId());
-        jdbcTemplate.update("""
-                update officer_histories
-                set payment_status = ?, updated_at = CURRENT_TIMESTAMP
-                where user_id = ?
-                  and officer_term_id = ?
-                  and deleted_at is null
-                """, status, request.userId(), request.officerTermId());
 
         Long paymentId = jdbcTemplate.queryForObject("""
                 select id from payment_records where user_id = ? and officer_term_id = ?
@@ -420,19 +430,13 @@ public class AdminFeatureController {
                 .stream()
                 .findFirst()
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "회비 내역을 찾을 수 없습니다."));
+        invalidation.afterCommit(((Number) payment.get("userId")).longValue());
 
         jdbcTemplate.update("""
                 update payment_records
-                set status = ?, paid_at = case when ? = 'PAID' then CURRENT_TIMESTAMP else null end, updated_at = CURRENT_TIMESTAMP
+                set status = ?, paid_at = case when ? = 'PAID' then coalesce(paid_at, CURRENT_TIMESTAMP) else paid_at end, updated_at = CURRENT_TIMESTAMP
                 where id = ?
                 """, status, status, id);
-        jdbcTemplate.update("""
-                update officer_histories
-                set payment_status = ?, updated_at = CURRENT_TIMESTAMP
-                where user_id = ?
-                  and officer_term_id = ?
-                  and deleted_at is null
-                """, status, payment.get("userId"), payment.get("officerTermId"));
         audit("UPDATE_PAYMENT_STATUS", "payment_record", id);
         return Map.of("id", id, "status", status);
     }
@@ -913,7 +917,7 @@ public class AdminFeatureController {
         throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "허용되지 않는 상태값입니다.");
     }
 
-    private Long approveApplication(Long applicationId) {
+    private ApplicationApproval approveApplication(Long applicationId, Long approvedRoleId, Long existingUserId, boolean confirmedNoMatch) {
         Map<String, Object> application = jdbcTemplate.query("""
                 select id, name, student_id, phone, email, major_name, admission_year, desired_role,
                        company_name, job_title, status
@@ -925,10 +929,14 @@ public class AdminFeatureController {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "신청을 찾을 수 없습니다."));
 
         Long majorId = findMajorId(text(application.get("majorName")));
-        Long officerRoleId = officerAssignment.findRoleId(text(application.get("desiredRole")));
+        Long officerRoleId = approvedRoleId == null
+                ? officerAssignment.findRoleId(text(application.get("desiredRole"))) : approvedRoleId;
+        Integer roleCount = jdbcTemplate.queryForObject("select count(*) from officer_roles where id = ?", Integer.class, officerRoleId);
+        if (roleCount == null || roleCount == 0) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Officer role not found");
         Long officerTermId = officerAssignment.findCurrentTermId();
         Long companyId = findOrCreateCompanyId(text(application.get("companyName")));
-        Long userId = findOrCreateApplicationUser(application, majorId, companyId);
+        ApplicationApproval approval = findOrCreateApplicationUser(application, majorId, companyId, existingUserId, confirmedNoMatch);
+        Long userId = approval.userId();
 
         officerAssignment.assign(userId, officerTermId, officerRoleId);
 
@@ -937,32 +945,46 @@ public class AdminFeatureController {
                 set status = 'APPROVED', reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
                 where id = ?
                 """, AuthContext.currentAdminId(), applicationId);
-        return userId;
+        return approval;
     }
 
-    private Long findOrCreateApplicationUser(Map<String, Object> application, Long majorId, Long companyId) {
+    private ApplicationApproval findOrCreateApplicationUser(Map<String, Object> application, Long majorId, Long companyId,
+            Long selectedUserId, boolean confirmedNoMatch) {
         String studentId = text(application.get("studentId"));
         String phone = text(application.get("phone"));
         Integer admissionYear = number(application.get("admissionYear"));
 
-        Long existingId = findExistingApplicationUser(text(application.get("name")), admissionYear, majorId, phone, studentId);
-        if (existingId != null) {
-            return existingId;
+        if (selectedUserId != null) {
+            Integer count = jdbcTemplate.queryForObject("select count(*) from users where id = ? and deleted_at is null and status not in ('WITHDRAWN', 'REJECTED')", Integer.class, selectedUserId);
+            if (count == null || count == 0) throw new ResponseStatusException(HttpStatus.CONFLICT, "Selected user is unavailable");
+            return new ApplicationApproval(selectedUserId, false);
         }
-
-        String storedStudentId = StringUtils.hasText(studentId) ? studentId : "APPLICATION-" + application.get("id");
+        administrativePeople.lockForCreation();
+        var candidates = administrativePeople.candidates(text(application.get("name")), studentId, phone);
+        if (!confirmedNoMatch && StringUtils.hasText(studentId) && StringUtils.hasText(phone)) {
+            var exact = candidates.stream().filter(candidate -> text(application.get("name")).equals(text(candidate.get("name")))
+                    && studentId.equals(text(candidate.get("student_id")))
+                    && normalizePhone(phone).equals(normalizePhone(text(candidate.get("phone"))))
+                    && !List.of("WITHDRAWN", "REJECTED").contains(text(candidate.get("status")))).toList();
+            if (exact.size() == 1 && candidates.size() == 1) {
+                return new ApplicationApproval(((Number) exact.get(0).get("id")).longValue(), false);
+            }
+        }
+        boolean identifierMatch = candidates.stream().anyMatch(candidate ->
+                (StringUtils.hasText(studentId) && studentId.equals(text(candidate.get("student_id"))))
+                || (StringUtils.hasText(phone) && normalizePhone(phone).equals(normalizePhone(text(candidate.get("phone"))))));
+        if (identifierMatch || candidates.size() >= 101) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "기존 회원 후보를 확인하고 existingUserId를 지정하세요. 신규 회원은 중복 식별자 확인 후 confirmedNoMatch를 지정하세요.");
+        }
+        Long id = administrativePeople.create(text(application.get("name")), studentId, phone, true);
         jdbcTemplate.update("""
-                insert into users (
-                    student_id, kingo_id, name, password, category, degree, major_id,
-                    admission_year, phone, email, email_receive, company_id, job_title,
-                    status, created_at, updated_at
-                ) values (?, null, ?, '', 'UNDERGRADUATE', 'BACHELOR', ?, ?, ?, ?, true, ?, ?, 'PENDING', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                """,
-                storedStudentId, text(application.get("name")), majorId, admissionYear, phone,
-                text(application.get("email")), companyId, text(application.get("jobTitle")));
-
-        return jdbcTemplate.queryForObject("select id from users where student_id = ? and deleted_at is null", Long.class, storedStudentId);
+                update users set category = 'UNDERGRADUATE', degree = 'BACHELOR', major_id = ?, admission_year = ?,
+                    email = ?, company_id = ?, job_title = ?, updated_at = CURRENT_TIMESTAMP where id = ?
+                """, majorId, admissionYear, text(application.get("email")), companyId, text(application.get("jobTitle")), id);
+        return new ApplicationApproval(id, true);
     }
+
+    private record ApplicationApproval(Long userId, boolean created) { }
 
     private Long findExistingApplicationUser(String name, Integer admissionYear, Long majorId, String phone, String studentId) {
         if (StringUtils.hasText(studentId)) {
@@ -1041,21 +1063,6 @@ public class AdminFeatureController {
         return jdbcTemplate.queryForObject("select id from companies where name = ? and deleted_at is null", Long.class, companyName);
     }
 
-    private boolean hasPaidCurrentOfficerFee(Long userId) {
-        Integer count = jdbcTemplate.queryForObject("""
-                select count(*)
-                from officer_histories oh
-                join officer_terms ot on ot.id = oh.officer_term_id
-                left join payment_records pr on pr.user_id = oh.user_id and pr.officer_term_id = oh.officer_term_id
-                    and pr.deleted_at is null
-                where oh.user_id = ?
-                  and oh.deleted_at is null
-                  and ot.current_term = true
-                  and (oh.payment_status = 'PAID' or pr.status = 'PAID')
-                """, Integer.class, userId);
-        return count != null && count > 0;
-    }
-
     /** 다른 임기의 납부를 기록할 때 쓸 직책. 가장 최근 임기의 직책을 그대로 이어 쓴다. */
     private Long findLatestOfficerRoleId(Long userId) {
         return jdbcTemplate.query("""
@@ -1110,9 +1117,8 @@ public class AdminFeatureController {
                 """, AuthContext.currentAdminId(), action, targetType, targetId);
     }
 
-    public record StatusUpdateRequest(
-            @NotBlank String status
-    ) {
+    public record StatusUpdateRequest(@NotBlank String status, Long officerRoleId, Long existingUserId, boolean confirmedNoMatch) {
+        public StatusUpdateRequest(String status) { this(status, null, null, false); }
     }
 
     public record ManagerCreateRequest(
