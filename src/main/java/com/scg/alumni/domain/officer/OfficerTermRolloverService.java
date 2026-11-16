@@ -1,11 +1,11 @@
 package com.scg.alumni.domain.officer;
 
 import java.time.LocalDate;
-import java.time.ZoneId;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.event.EventListener;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -25,34 +25,34 @@ import org.springframework.transaction.annotation.Transactional;
  */
 @Slf4j
 @Service
+@EnableConfigurationProperties(OfficerTermPolicyProperties.class)
 @RequiredArgsConstructor
 public class OfficerTermRolloverService {
 
-    private static final ZoneId KST = ZoneId.of("Asia/Seoul");
-
-    /** 한 대(代)를 이루는 기(期)의 수. 1기와 2기가 끝나면 다음 대로 넘어간다. */
-    private static final int PHASES_PER_GENERATION = 2;
-
     private final JdbcTemplate jdbcTemplate;
+    private final OfficerTermPolicyProperties policy;
 
     @EventListener(ApplicationReadyEvent.class)
+    @Transactional
     public void rolloverOnStartup() {
         rollover();
     }
 
     /** 매일 새벽에 확인한다. 전환일(5월 1일) 당일 첫 실행에서 넘어간다. */
-    @Scheduled(cron = "0 5 0 * * *", zone = "Asia/Seoul")
+    @Scheduled(cron = "0 5 0 * * *", zone = "${officer-term.zone:Asia/Seoul}")
+    @Transactional
     public void rolloverDaily() {
         rollover();
     }
 
     @Transactional
     public void rollover() {
-        LocalDate today = LocalDate.now(KST);
+        jdbcTemplate.queryForObject("select id from officer_rollover_lock where id = 1 for update", Integer.class);
+        LocalDate today = LocalDate.now(policy.zone());
         Long termId = findTermIdCovering(today);
         while (termId == null) {
-            if (!appendNextTerm()) {
-                log.warn("임기를 만들 기준이 없어 전환을 건너뜁니다. officer_terms가 비어 있습니다.");
+            if (!appendNextTerm(today)) {
+                log.warn("오늘 날짜를 포함하는 임기가 없으며 안전하게 다음 임기를 만들 수 없습니다. 임기 데이터를 확인해 주세요.");
                 return;
             }
             termId = findTermIdCovering(today);
@@ -74,7 +74,7 @@ public class OfficerTermRolloverService {
     }
 
     /** 마지막 임기 다음 한 칸을 만든다. 만들 기준이 없으면 false. */
-    private boolean appendNextTerm() {
+    private boolean appendNextTerm(LocalDate today) {
         Map<String, Object> latest = jdbcTemplate.query("""
                 select generation, phase, ended_at
                 from officer_terms
@@ -90,14 +90,15 @@ public class OfficerTermRolloverService {
         if (latest == null) {
             return false;
         }
+        if (!((LocalDate) latest.get("endedAt")).isBefore(today)) return false;
 
         int generation = (int) latest.get("generation");
         int phase = (int) latest.get("phase");
-        int nextGeneration = phase >= PHASES_PER_GENERATION ? generation + 1 : generation;
-        int nextPhase = phase >= PHASES_PER_GENERATION ? 1 : phase + 1;
+        int nextGeneration = phase >= policy.phasesPerGeneration() ? generation + 1 : generation;
+        int nextPhase = phase >= policy.phasesPerGeneration() ? 1 : phase + 1;
 
         LocalDate startedAt = ((LocalDate) latest.get("endedAt")).plusDays(1);
-        LocalDate endedAt = startedAt.plusYears(1).minusDays(1);
+        LocalDate endedAt = policy.nextEnd(startedAt);
 
         jdbcTemplate.update("""
                 insert into officer_terms (generation, phase, started_at, ended_at, current_term, created_at, updated_at)
@@ -108,10 +109,13 @@ public class OfficerTermRolloverService {
     }
 
     private void markCurrent(Long termId) {
-        Integer alreadyCurrent = jdbcTemplate.queryForObject("""
+        Integer correctFlags = jdbcTemplate.queryForObject("""
+                select count(*) from officer_terms where current_term = true and id <> ?
+                """, Integer.class, termId);
+        Integer selectedCurrent = jdbcTemplate.queryForObject("""
                 select count(*) from officer_terms where id = ? and current_term = true
                 """, Integer.class, termId);
-        if (alreadyCurrent != null && alreadyCurrent > 0) {
+        if (correctFlags != null && correctFlags == 0 && selectedCurrent != null && selectedCurrent == 1) {
             return;
         }
         jdbcTemplate.update("update officer_terms set current_term = false, updated_at = CURRENT_TIMESTAMP where current_term = true");

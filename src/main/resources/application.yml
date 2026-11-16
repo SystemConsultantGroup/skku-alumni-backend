@@ -89,3 +89,13 @@ auth:
 inquiry:
   # 문의 접수 알림 메일의 보내는 주소.
   mail-from: ${INQUIRY_MAIL_FROM:scg@scg.skku.ac.kr}
+
+officer-term:
+  start-month: ${OFFICER_TERM_START_MONTH:5}
+  start-day: ${OFFICER_TERM_START_DAY:1}
+  phases-per-generation: ${OFFICER_TERM_PHASES_PER_GENERATION:2}
+  access-grace-days: ${OFFICER_TERM_ACCESS_GRACE_DAYS:7}
+  zone: ${OFFICER_TERM_ZONE:Asia/Seoul}
+
+search:
+  mysql-ngram-enabled: ${SEARCH_MYSQL_NGRAM_ENABLED:false}
