@@ -1,6 +1,8 @@
 package com.scg.alumni.api.auth;
 
 import java.util.List;
+import com.scg.alumni.domain.access.AccessLevel;
+import com.scg.alumni.domain.access.AccessPermissionCache;
 import com.scg.alumni.domain.academic.MajorNames;
 import com.scg.alumni.global.security.AdminRoleGuard;
 import com.scg.alumni.global.security.AuthContext;
@@ -8,6 +10,7 @@ import com.scg.alumni.global.security.AuthProperties;
 import com.scg.alumni.global.security.AuthScope;
 import com.scg.alumni.global.security.AuthenticatedPrincipal;
 import com.scg.alumni.global.security.JwtTokenService;
+import com.scg.alumni.global.security.LoginAttemptLimiter;
 import com.scg.alumni.global.security.PasswordPolicy;
 import com.scg.alumni.global.security.RefreshTokenService;
 import jakarta.servlet.http.Cookie;
@@ -47,6 +50,8 @@ public class AuthController {
     private final RefreshTokenService refreshTokenService;
     private final AuthProperties authProperties;
     private final AdminRoleGuard adminRoleGuard;
+    private final AccessPermissionCache accessPermissionCache;
+    private final LoginAttemptLimiter loginAttemptLimiter;
 
     @PostMapping("/member/login")
     @Transactional(readOnly = true)
@@ -55,11 +60,15 @@ public class AuthController {
             HttpServletRequest httpRequest,
             HttpServletResponse httpResponse
     ) {
+        loginAttemptLimiter.check(AuthScope.MEMBER, request.identifier());
         MemberCredential credential = findMemberCredential(request.identifier());
+        loginAttemptLimiter.checkAccount(AuthScope.MEMBER, credential.id());
         if (!passwordEncoder.matches(request.password(), credential.password())) {
             throw unauthorized();
         }
-        requireLoginableStatus(credential.status());
+        if (accessPermissionCache.currentLevel(credential.id()) == AccessLevel.NONE) {
+            throw unauthorized();
+        }
 
         AuthenticatedPrincipal principal = new AuthenticatedPrincipal(credential.id(), AuthScope.MEMBER, credential.name());
         return issueAuthResponse(principal, httpRequest, httpResponse);
@@ -99,7 +108,9 @@ public class AuthController {
             HttpServletRequest httpRequest,
             HttpServletResponse httpResponse
     ) {
+        loginAttemptLimiter.check(AuthScope.ADMIN, request.identifier());
         AdminCredential credential = findAdminCredential(request.identifier());
+        loginAttemptLimiter.checkAccount(AuthScope.ADMIN, credential.id());
         if (!passwordEncoder.matches(request.password(), credential.password())) {
             throw unauthorized();
         }
@@ -167,7 +178,7 @@ public class AuthController {
 
         AuthenticatedPrincipal principal = refreshTokenService.consume(scope, refreshToken)
                 .orElseThrow(this::unauthorized);
-        if (scope == AuthScope.MEMBER && !isActiveMember(principal.id())) {
+        if (scope == AuthScope.MEMBER && accessPermissionCache.currentLevel(principal.id()) == AccessLevel.NONE) {
             revokeAndClear(AuthScope.MEMBER, request, response);
             throw unauthorized();
         }
@@ -199,7 +210,7 @@ public class AuthController {
     }
 
     private MemberCredential findMemberCredential(String identifier) {
-        return jdbcTemplate.query("""
+        List<MemberCredential> matches = jdbcTemplate.query("""
                         select id, name, password, status
                         from users
                         where deleted_at is null
@@ -207,7 +218,7 @@ public class AuthController {
                           and password <> ''
                           and (student_id = ? or login_id = ? or email = ?)
                         order by id
-                        limit 1
+                        limit 2
                         """,
                 (resultSet, rowNum) -> new MemberCredential(
                         resultSet.getLong("id"),
@@ -215,10 +226,9 @@ public class AuthController {
                         resultSet.getString("password"),
                         resultSet.getString("status")
                 ),
-                identifier, identifier, identifier)
-                .stream()
-                .findFirst()
-                .orElseThrow(this::unauthorized);
+                identifier, identifier, identifier);
+        if (matches.size() != 1) throw unauthorized();
+        return matches.get(0);
     }
 
     private AdminCredential findAdminCredential(String identifier) {

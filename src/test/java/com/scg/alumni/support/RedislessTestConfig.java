@@ -43,11 +43,17 @@ public class RedislessTestConfig {
         ValueOperations<String, String> values = mock(ValueOperations.class);
 
         given(template.opsForValue()).willReturn(values);
+        given(template.execute(org.mockito.ArgumentMatchers.<org.springframework.data.redis.core.script.RedisScript<Long>>any(),
+                org.mockito.ArgumentMatchers.<java.util.List<String>>any())).willReturn  (1L);
         willAnswer(invocation -> {
             store.put(invocation.getArgument(0), invocation.getArgument(1));
             return null;
         }).given(values).set(anyString(), anyString(), any(Duration.class));
         given(values.get(anyString())).willAnswer(invocation -> store.get(invocation.<String>getArgument(0)));
+        given(values.increment(anyString())).willAnswer(invocation -> {
+            String key = invocation.getArgument(0);
+            return Long.valueOf(store.compute(key, (ignored, value) -> Long.toString(value == null ? 1 : Long.parseLong(value) + 1)));
+        });
         given(template.delete(anyString())).willAnswer(invocation -> store.remove(invocation.<String>getArgument(0)) != null);
 
         return template;

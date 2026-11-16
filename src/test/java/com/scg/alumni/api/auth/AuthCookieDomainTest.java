@@ -24,7 +24,7 @@ class AuthCookieDomainTest {
         AuthProperties properties = new AuthProperties();
         properties.setCookieDomain(domain);
         // 쿠키 조립만 확인하므로 나머지 협력자는 쓰이지 않는다.
-        return new AuthController(null, null, null, null, properties, null);
+        return new AuthController(null, null, null, null, properties, null, null, null);
     }
 
     private List<String> setCookies(MockHttpServletResponse response) {
