@@ -5,8 +5,7 @@ import com.scg.alumni.domain.academic.MajorCatalog;
 import com.scg.alumni.domain.member.Member;
 import com.scg.alumni.domain.member.MemberRepository;
 import com.scg.alumni.domain.member.MemberStatus;
-import com.scg.alumni.domain.officer.OfficerPaymentStatus;
-import com.scg.alumni.domain.officer.OfficerTerm;
+import com.scg.alumni.domain.officer.OfficerTermPolicyProperties;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import com.scg.alumni.global.security.AuthContext;
@@ -32,6 +31,7 @@ public class MemberDirectoryService {
     private final MemberRepository memberRepository;
     private final JdbcTemplate jdbcTemplate;
     private final MajorCatalog majorCatalog;
+    private final OfficerTermPolicyProperties termPolicy;
 
     public CursorPageResponse<MemberSummaryResponse> search(
             String keyword,
@@ -48,7 +48,7 @@ public class MemberDirectoryService {
             Integer size,
             String sort
     ) {
-        LocalDate today = LocalDate.now(ZoneId.of("Asia/Seoul"));
+        LocalDate today = LocalDate.now(termPolicy.zone());
         int pageSize = normalizeSize(size);
         boolean orderByRole = !RECENT_SORT.equals(normalizeSort(sort));
         List<Long> blockedMemberIds = blockedMemberIds();
@@ -73,16 +73,15 @@ public class MemberDirectoryService {
                 orderByRole ? 1 : 0,
                 blockedMemberIds,
                 MemberStatus.ACTIVE,
-                OfficerPaymentStatus.PAID,
                 today,
-                today.minusDays(OfficerTerm.GRACE_DAYS),
+                today,
                 PageRequest.of(0, pageSize + 1)
         );
 
         boolean hasNext = fetchedMembers.size() > pageSize;
         List<Member> pageMembers = hasNext ? fetchedMembers.subList(0, pageSize) : fetchedMembers;
         List<MemberSummaryResponse> items = pageMembers.stream()
-                .map(MemberSummaryResponse::from)
+                .map(member -> MemberSummaryResponse.from(member, today))
                 .toList();
         Long nextCursor = hasNext && !items.isEmpty() ? items.get(items.size() - 1).id() : null;
 
@@ -119,9 +118,8 @@ public class MemberDirectoryService {
         }
         List<Integer> sortOrders = memberRepository.findDirectoryRoleSortOrders(
                 cursor,
-                OfficerPaymentStatus.PAID,
                 today,
-                today.minusDays(OfficerTerm.GRACE_DAYS),
+                today,
                 PageRequest.of(0, 1));
         return sortOrders.isEmpty() ? null : sortOrders.get(0);
     }
@@ -133,13 +131,12 @@ public class MemberDirectoryService {
      * 인원수로 내보이는 자리라 실제 수를 따로 센다.
      */
     public long countVisibleOfficers() {
-        LocalDate today = LocalDate.now(ZoneId.of("Asia/Seoul"));
+        LocalDate today = LocalDate.now(termPolicy.zone());
         return memberRepository.countCurrentPaidDirectory(
                 blockedMemberIds(),
                 MemberStatus.ACTIVE,
-                OfficerPaymentStatus.PAID,
                 today,
-                today.minusDays(OfficerTerm.GRACE_DAYS));
+                today);
     }
 
     /** 내가 차단한 사람들. 비어 있으면 {@code not in ()} 이 문법 오류라 없는 id 를 넣는다. */

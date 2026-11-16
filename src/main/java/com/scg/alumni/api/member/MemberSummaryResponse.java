@@ -21,13 +21,13 @@ public record MemberSummaryResponse(
         String prText
 ) {
 
-    public static MemberSummaryResponse from(Member member) {
-        OfficerHistory currentHistory = member.currentPaidOfficerHistory().orElse(null);
+    public static MemberSummaryResponse from(Member member, java.time.LocalDate today) {
+        OfficerHistory currentHistory = member.currentOfficerHistory(today).orElse(null);
 
         return new MemberSummaryResponse(
                 member.getId(),
                 member.getName(),
-                member.getMajor().getDisplayName(),
+                member.getMajor() == null ? null : member.getMajor().getDisplayName(),
                 member.getAdmissionYear(),
                 member.getGraduationYear(),
                 member.getCompany() == null ? null : member.getCompany().getName(),
