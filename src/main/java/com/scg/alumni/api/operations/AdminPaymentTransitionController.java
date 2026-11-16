@@ -22,13 +22,14 @@ public class AdminPaymentTransitionController {
             @RequestParam(defaultValue = "20") int size) {
         int limit = Math.max(1, Math.min(size, 100));
         List<Map<String, Object>> rows = jdbc.query("""
-                select h.id, h.user_id, h.officer_term_id, h.payment_status as history_status,
+                select h.id, h.user_id, h.officer_term_id, a.legacy_status as history_status,
                        h.deleted_at as history_deleted_at, p.id as payment_id, p.status as payment_status,
                        p.amount, p.paid_at, p.deleted_at as payment_deleted_at
-                from officer_histories h left join payment_records p
+                from officer_histories h join legacy_officer_payment_status_archive a on a.officer_history_id = h.id
+                left join payment_records p
                   on p.user_id = h.user_id and p.officer_term_id = h.officer_term_id
                 where (? is null or h.id < ?) and
-                  (p.id is null or h.payment_status <> p.status or h.deleted_at is not null or p.deleted_at is not null)
+                  (p.id is null or a.legacy_status <> p.status or h.deleted_at is not null or p.deleted_at is not null)
                 order by h.id desc limit ?
                 """, JdbcResponseMapper.INSTANCE, cursor, cursor, limit + 1);
         return page(rows, limit);

@@ -67,14 +67,13 @@ class OfficerAssignmentSafetyTest {
         Long term = jdbc.queryForObject("select max(id) from officer_terms", Long.class);
         jdbc.update("insert into payment_records (user_id, officer_term_id, amount, status) values (1, ?, 100, 'PAID')", term);
         assignments.ensureHistory(1L, term, 1L);
-        assertThat(jdbc.queryForObject("select payment_status from officer_histories where user_id = 1 and officer_term_id = ?", String.class, term)).isEqualTo("UNPAID");
+        assertThat(jdbc.queryForObject("select count(*) from legacy_officer_payment_status_archive where officer_history_id = (select id from officer_histories where user_id = 1 and officer_term_id = ?)", Integer.class, term)).isZero();
         assertThat(jdbc.queryForObject("select status from payment_records where user_id = 1 and officer_term_id = ?", String.class, term)).isEqualTo("PAID");
     }
 
     @Test
     void missingPaymentForLegacyPaidHistoryRequiresReview() {
         jdbc.update("delete from payment_records where user_id = 1 and officer_term_id = 3");
-        jdbc.update("update officer_histories set payment_status = 'PAID' where user_id = 1 and officer_term_id = 3");
         assertThatThrownBy(() -> assignments.ensurePaymentRecord(1L, 3L, 1L)).isInstanceOf(ResponseStatusException.class);
         assertThat(jdbc.queryForObject("select count(*) from payment_records where user_id = 1 and officer_term_id = 3", Integer.class)).isZero();
     }

@@ -30,7 +30,7 @@ class MemberDirectoryApprovalTest {
         LocalDate date = LocalDate.of(2040, 6, 1);
         long term = createTerm(980, LocalDate.of(2040, 5, 1), LocalDate.of(2041, 4, 30));
         jdbc.update("update users set name = 'Approval Matrix' where id = 1");
-        jdbc.update("insert into officer_histories (user_id, officer_term_id, officer_role_id, started_at, payment_status) values (1, ?, 1, ?, 'UNPAID')", term, date);
+        jdbc.update("insert into officer_histories (user_id, officer_term_id, officer_role_id, started_at) values (1, ?, 1, ?)", term, date);
         long history = jdbc.queryForObject("select id from officer_histories where user_id = 1 and officer_term_id = ?", Long.class, term);
         jdbc.update("insert into payment_records (user_id, officer_term_id, amount, status) values (1, ?, 100, 'UNPAID')", term);
         for (String status : List.of("ACTIVE", "PENDING")) {
@@ -56,7 +56,7 @@ class MemberDirectoryApprovalTest {
         long approvedTerm = createTerm(982, date.minusMonths(2), date.plusMonths(3));
         long unapprovedTerm = createTerm(983, date.minusMonths(1), date.plusMonths(4));
         jdbc.update("update users set name = 'Approval Matrix', status = 'PENDING' where id = 1");
-        jdbc.update("insert into officer_histories (user_id, officer_term_id, officer_role_id, started_at, payment_status) values (1, ?, 2, ?, 'UNPAID'), (1, ?, 1, ?, 'UNPAID')", approvedTerm, date.minusMonths(2), unapprovedTerm, date.minusMonths(1));
+        jdbc.update("insert into officer_histories (user_id, officer_term_id, officer_role_id, started_at) values (1, ?, 2, ?), (1, ?, 1, ?)", approvedTerm, date.minusMonths(2), unapprovedTerm, date.minusMonths(1));
         jdbc.update("insert into officer_history_approvals (officer_history_id) select id from officer_histories where user_id = 1 and officer_term_id = ?", approvedTerm);
         Member member = directory(date).getFirst();
         assertThat(member.currentOfficerHistory(date).orElseThrow().getOfficerTerm().getId()).isEqualTo(approvedTerm);
@@ -68,7 +68,7 @@ class MemberDirectoryApprovalTest {
         LocalDate end = LocalDate.of(2041, 4, 30);
         long term = createTerm(981, end.minusYears(1).plusDays(1), end);
         jdbc.update("update users set name = 'Approval Matrix', status = 'PENDING' where id = 1");
-        jdbc.update("insert into officer_histories (user_id, officer_term_id, officer_role_id, started_at, ended_at, payment_status) values (1, ?, 1, ?, ?, 'UNPAID')", term, end.minusDays(10), end);
+        jdbc.update("insert into officer_histories (user_id, officer_term_id, officer_role_id, started_at, ended_at) values (1, ?, 1, ?, ?)", term, end.minusDays(10), end);
         jdbc.update("insert into officer_history_approvals (officer_history_id) select id from officer_histories where user_id = 1 and officer_term_id = ?", term);
         jdbc.update("insert into payment_records (user_id, officer_term_id, amount, status) values (1, ?, 100, 'PAID')", term);
         assertThat(directory(end)).hasSize(1);

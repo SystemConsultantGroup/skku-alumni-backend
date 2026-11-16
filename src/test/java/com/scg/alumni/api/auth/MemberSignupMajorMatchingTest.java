@@ -53,9 +53,9 @@ class MemberSignupMajorMatchingTest {
         prepareFirstLogin(4L);
         // 4번 회원은 지난 임기 이력만 있어 가입 자격이 없다. 현행 임기 이력을 붙여 자격을 만든다.
         jdbcTemplate.update("""
-                insert into officer_histories (user_id, officer_term_id, officer_role_id, started_at, payment_status,
+                insert into officer_histories (user_id, officer_term_id, officer_role_id, started_at,
                     created_at, updated_at)
-                select 4, id, 4, started_at, 'PAID', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                select 4, id, 4, started_at, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                 from officer_terms where current_term = true
                 """);
         assertThat(storedMajorOf(4L)).isEqualTo("무역학과");

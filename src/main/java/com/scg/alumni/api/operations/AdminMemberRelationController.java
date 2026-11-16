@@ -230,8 +230,8 @@ public class AdminMemberRelationController {
             jdbcTemplate.update("""
                     insert into officer_histories (
                         user_id, officer_term_id, officer_role_id, started_at, ended_at,
-                        payment_status, created_at, updated_at
-                    ) values (?, ?, ?, ?, ?, 'UNPAID', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        created_at, updated_at
+                    ) values (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     """, memberId, request.officerTermId(), request.officerRoleId(),
                     startedAt, request.endedAt());
         }

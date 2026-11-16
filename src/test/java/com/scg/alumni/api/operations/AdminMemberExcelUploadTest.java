@@ -182,10 +182,11 @@ class AdminMemberExcelUploadTest {
         Long memberId = jdbcTemplate.queryForObject(
                 "select id from users where student_id = '2020999997'", Long.class);
         Map<String, Object> history = jdbcTemplate.queryForMap("""
-                select orole.name as role_name, oh.payment_status
+                select orole.name as role_name, pr.status as payment_status
                 from officer_histories oh
                 join officer_terms ot on ot.id = oh.officer_term_id and ot.current_term = true
                 join officer_roles orole on orole.id = oh.officer_role_id
+                join payment_records pr on pr.user_id = oh.user_id and pr.officer_term_id = oh.officer_term_id and pr.deleted_at is null
                 where oh.user_id = ?
                 """, memberId);
         assertThat(history.get("role_name")).isEqualTo("이사");
@@ -204,9 +205,10 @@ class AdminMemberExcelUploadTest {
         upload(sheetOf(with(row("1998310001", "박성균", "법학과", "1998"), 10, "이사")));
 
         assertThat(jdbcTemplate.queryForObject("""
-                select oh.payment_status
+                select pr.status
                 from officer_histories oh
                 join officer_terms ot on ot.id = oh.officer_term_id and ot.current_term = true
+                join payment_records pr on pr.user_id = oh.user_id and pr.officer_term_id = oh.officer_term_id and pr.deleted_at is null
                 where oh.user_id = 1
                 """, String.class)).isEqualTo("PAID");
     }

@@ -94,9 +94,9 @@ public class OfficerAssignment {
         }
         jdbcTemplate.update("""
                 insert into officer_histories (
-                    user_id, officer_term_id, officer_role_id, started_at, payment_status, created_at, updated_at
+                    user_id, officer_term_id, officer_role_id, started_at, created_at, updated_at
                 )
-                select ?, t.id, ?, t.started_at, 'UNPAID', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                select ?, t.id, ?, t.started_at, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                 from officer_terms t
                 where t.id = ?
                 """, memberId, officerRoleId, officerTermId);
@@ -137,8 +137,9 @@ public class OfficerAssignment {
             return;
         }
         Integer legacyPaid = jdbcTemplate.queryForObject("""
-                select count(*) from officer_histories
-                where user_id = ? and officer_term_id = ? and payment_status = 'PAID' and deleted_at is null
+                select count(*) from officer_histories h
+                join legacy_officer_payment_status_archive a on a.officer_history_id = h.id
+                where h.user_id = ? and h.officer_term_id = ? and a.legacy_status = 'PAID' and h.deleted_at is null
                 """, Integer.class, memberId, officerTermId);
         if (legacyPaid != null && legacyPaid > 0) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Missing payment record for legacy paid history requires review");

@@ -31,15 +31,14 @@ class PaymentSourceTest {
         SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
                 new AuthenticatedPrincipal(1L, AuthScope.ADMIN, "Admin"), null));
         long payment = jdbc.queryForObject("select id from payment_records where user_id = 1 and officer_term_id = 3", Long.class);
-        jdbc.update("update officer_histories set payment_status = 'PAID' where user_id = 1 and officer_term_id = 3");
         jdbc.update("update payment_records set status = 'PAID', paid_at = '2026-05-10 12:00:00', amount = 12345 where id = ?", payment);
         admin.updatePaymentStatus(payment, new AdminFeatureController.StatusUpdateRequest("UNPAID"));
-        assertThat(jdbc.queryForObject("select payment_status from officer_histories where user_id = 1 and officer_term_id = 3", String.class)).isEqualTo("PAID");
+        assertThat(jdbc.queryForObject("select legacy_status from legacy_officer_payment_status_archive where officer_history_id = (select id from officer_histories where user_id = 1 and officer_term_id = 3)", String.class)).isEqualTo("PAID");
         assertThat(jdbc.queryForObject("select paid_at from payment_records where id = ?", java.time.LocalDateTime.class, payment)).isEqualTo(java.time.LocalDateTime.of(2026, 5, 10, 12, 0));
         assertThat(jdbc.queryForObject("select amount from payment_records where id = ?", Integer.class, payment)).isEqualTo(12345);
         relations.removePayment(1L, payment);
         assertThat(jdbc.queryForObject("select count(*) from payment_records where id = ? and deleted_at is not null and amount = 12345 and paid_at is not null", Integer.class, payment)).isEqualTo(1);
-        assertThat(jdbc.queryForObject("select payment_status from officer_histories where user_id = 1 and officer_term_id = 3", String.class)).isEqualTo("PAID");
+        assertThat(jdbc.queryForObject("select legacy_status from legacy_officer_payment_status_archive where officer_history_id = (select id from officer_histories where user_id = 1 and officer_term_id = 3)", String.class)).isEqualTo("PAID");
     }
 
     @Test
@@ -74,7 +73,7 @@ class PaymentSourceTest {
     @Test
     void reconciliationListsMismatchesAndPaymentsWithoutHistory() {
         jdbc.update("update payment_records set status = 'PAID' where user_id = 1 and officer_term_id = 3");
-        jdbc.update("update officer_histories set payment_status = 'UNPAID' where user_id = 1 and officer_term_id = 3");
+        jdbc.update("update legacy_officer_payment_status_archive set legacy_status = 'UNPAID' where officer_history_id = (select id from officer_histories where user_id = 1 and officer_term_id = 3)");
         assertThat(transition.histories(null, 100).items())
                 .anySatisfy(row -> {
                     assertThat(((Number) row.get("userId")).longValue()).isEqualTo(1L);

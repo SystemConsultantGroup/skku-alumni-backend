@@ -37,7 +37,7 @@ class UnifiedSearchServiceTest {
         jdbc.update("update users set name = 'Pending Search Test', status = 'PENDING' where id = 2");
         jdbc.update("insert into officer_terms (generation, phase, started_at, ended_at, current_term) values (998, 1, ?, ?, false)", today.minusDays(1), today.plusDays(1));
         long term = jdbc.queryForObject("select id from officer_terms where generation = 998", Long.class);
-        jdbc.update("insert into officer_histories (user_id, officer_term_id, officer_role_id, started_at, payment_status) values (2, ?, 1, ?, 'UNPAID')", term, today);
+        jdbc.update("insert into officer_histories (user_id, officer_term_id, officer_role_id, started_at) values (2, ?, 1, ?)", term, today);
         assertThat(repository.people("Pending Search Test", 1, today, null, null, 20)).isEmpty();
         jdbc.update("insert into officer_history_approvals (officer_history_id) select id from officer_histories where user_id = 2 and officer_term_id = ?", term);
         assertThat(repository.people("Pending Search Test", 1, today, null, null, 20))
