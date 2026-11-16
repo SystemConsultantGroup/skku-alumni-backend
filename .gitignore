@@ -28,5 +28,11 @@ bin/
 application-*.local.yml
 application-local.yml
 
+### Local agent handoff and operational review materials ###
+/docs/BACKEND_RENEWAL_DIRECTIVE.md
+/docs/NEXT_AGENT_HANDOFF.md
+/docs/payment-migration-audit.sql
+/docs/payment-transition-runbook.md
+
 ### OS ###
 .DS_Store
