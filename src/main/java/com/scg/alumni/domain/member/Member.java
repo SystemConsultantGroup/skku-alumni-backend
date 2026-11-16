@@ -124,14 +124,12 @@ public class Member extends BaseTimeEntity {
     @OneToMany(mappedBy = "member")
     private List<OfficerHistory> officerHistories = new ArrayList<>();
 
-    /**
-     * 지금 유효한 납부 이력. 유예 기간 때문에 직전 임기와 현행 임기가 함께
-     * 유효할 수 있으므로, 둘 다 냈다면 최신 임기 쪽을 보여준다.
-     */
-    public Optional<OfficerHistory> currentPaidOfficerHistory() {
+    /** 현직 승인 이력 중 최신 임기의 직책을 표시한다. ACTIVE 계정은 기존 이력을 인정한다. */
+    public Optional<OfficerHistory> currentOfficerHistory(java.time.LocalDate today) {
         return officerHistories.stream()
                 .filter(history -> history.getDeletedAt() == null)
-                .filter(OfficerHistory::isCurrentPaid)
+                .filter(history -> status == MemberStatus.ACTIVE || history.getApprovalCount() > 0)
+                .filter(history -> history.isCurrent(today))
                 .max(java.util.Comparator.comparing(history -> history.getOfficerTerm().getStartedAt()));
     }
 }

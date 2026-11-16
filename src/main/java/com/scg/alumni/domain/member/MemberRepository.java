@@ -1,6 +1,5 @@
 package com.scg.alumni.domain.member;
 
-import com.scg.alumni.domain.officer.OfficerPaymentStatus;
 import java.util.List;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -17,11 +16,8 @@ public interface MemberRepository extends JpaRepository<Member, Long> {
      * 늘어놓으면 회장이 몇 페이지 뒤에 묻힌다. {@code officer_roles.sort_order} 는
      * 회장 10, 부회장 20 … 처럼 높은 자리일수록 작은 값이라 오름차순이 곧 직급 순이다.
      *
-     * <p>정렬 기준이 되는 직급은 카드에 찍히는 직급과 같아야 한다. 임기가 바뀐
-     * 직후 유예 기간에는 지난 임기와 새 임기의 납부 기록이 둘 다 살아 있는데,
-     * 화면은 {@code Member#currentPaidOfficerHistory} 를 따라 시작일이 늦은 쪽을
-     * 보여준다. 그래서 여기서도 시작일이 가장 늦은 기록 하나만 붙여 그 직급으로
-     * 줄을 세운다. (임기 하나에 회원 하나는 유일하므로 이 조인은 줄을 늘리지 않는다.)
+     * <p>정렬 직급은 카드와 같이 승인된 현직 이력 중 최신 임기를 기준으로 한다.
+     * ACTIVE 계정의 기존 이력은 별도의 승인 기록 없이 인정한다.
      *
      * <p>홈의 "최근 임원" 자리는 직급이 아니라 최근에 들어온 순서를 보여주는 곳이라
      * {@code roleOrderWeight} 를 0 으로 받는다. 그러면 직급 칸이 모두 같은 값이 되어
@@ -34,25 +30,31 @@ public interface MemberRepository extends JpaRepository<Member, Long> {
     @Query("""
             select m
             from Member m
-            join m.major major
+            left join m.major major
             left join m.company company
             left join m.industry industry
             join OfficerHistory currentHistory
                 on currentHistory.member = m
                and currentHistory.deletedAt is null
-               and currentHistory.paymentStatus = :paymentStatus
+               and (m.status = :memberStatus or currentHistory.approvalCount > 0)
+               and currentHistory.startedAt <= :today
+               and (currentHistory.endedAt is null or currentHistory.endedAt >= :today)
                and currentHistory.officerTerm.startedAt <= :today
                and currentHistory.officerTerm.endedAt >= :graceFloor
+               and currentHistory.officerTerm.endedAt >= :today
                and currentHistory.officerTerm.startedAt = (
                        select max(latestHistory.officerTerm.startedAt)
                        from OfficerHistory latestHistory
                        where latestHistory.member = m
                          and latestHistory.deletedAt is null
-                         and latestHistory.paymentStatus = :paymentStatus
+                         and (m.status = :memberStatus or latestHistory.approvalCount > 0)
+                         and latestHistory.startedAt <= :today
+                         and (latestHistory.endedAt is null or latestHistory.endedAt >= :today)
                          and latestHistory.officerTerm.startedAt <= :today
                          and latestHistory.officerTerm.endedAt >= :graceFloor
+                         and latestHistory.officerTerm.endedAt >= :today
                    )
-            where m.status = :memberStatus
+            where (m.status = :memberStatus or m.status = com.scg.alumni.domain.member.MemberStatus.PENDING)
               and m.deletedAt is null
               and (
                   :cursorId is null
@@ -67,8 +69,11 @@ public interface MemberRepository extends JpaRepository<Member, Long> {
                   join h.officerTerm term
                   where h.member = m
                     and h.deletedAt is null
-                    and h.paymentStatus = :paymentStatus
+                    and (m.status = :memberStatus or h.approvalCount > 0)
+                    and h.startedAt <= :today
+                    and (h.endedAt is null or h.endedAt >= :today)
                     and term.startedAt <= :today and term.endedAt >= :graceFloor
+                    and term.endedAt >= :today
                     and (:officerTermId is null or term.id = :officerTermId)
                     and (:officerRoleId is null or h.officerRole.id = :officerRoleId)
               )
@@ -82,15 +87,15 @@ public interface MemberRepository extends JpaRepository<Member, Long> {
                       or replace(lower(coalesce(company.name, '')), ' ', '') like :keyword
                       or replace(lower(coalesce(m.jobTitle, '')), ' ', '') like :keyword
                       or replace(lower(coalesce(industry.name, '')), ' ', '') like :keyword
-                      or exists (select allHistory.id from OfficerHistory allHistory where allHistory.member = m and allHistory.deletedAt is null and allHistory.paymentStatus = :paymentStatus and allHistory.officerTerm.startedAt <= :today and allHistory.officerTerm.endedAt >= :graceFloor and (replace(lower(allHistory.officerRole.name), ' ', '') like :keyword or replace(lower(concat(str(allHistory.officerTerm.generation), '대', str(allHistory.officerTerm.phase), '기')), ' ', '') like :keyword))
+                      or exists (select allHistory.id from OfficerHistory allHistory where allHistory.member = m and allHistory.deletedAt is null and (m.status = :memberStatus or allHistory.approvalCount > 0) and allHistory.startedAt <= :today and (allHistory.endedAt is null or allHistory.endedAt >= :today) and allHistory.officerTerm.startedAt <= :today and allHistory.officerTerm.endedAt >= :today and (replace(lower(allHistory.officerRole.name), ' ', '') like :keyword or replace(lower(concat(str(allHistory.officerTerm.generation), '대', str(allHistory.officerTerm.phase), '기')), ' ', '') like :keyword))
                       or replace(lower(concat(coalesce(m.workAddress1, ''), coalesce(m.workAddress2, ''))), ' ', '') like :keyword
                       or (m.homeAddressPublic = true and replace(lower(concat(coalesce(m.homeAddress1, ''), coalesce(m.homeAddress2, ''))), ' ', '') like :keyword)
                   ))
                   or (:searchType = 'major' and major.id in :keywordMajorIds)
                   or (:searchType = 'industry' and replace(lower(coalesce(industry.name, '')), ' ', '') like :keyword)
                   or (:searchType = 'admission' and (replace(lower(coalesce(m.studentId, '')), ' ', '') like :studentIdKeyword or str(m.admissionYear) like :admissionYearKeyword))
-                  or (:searchType = 'term' and exists (select termHistory.id from OfficerHistory termHistory where termHistory.member = m and termHistory.deletedAt is null and termHistory.paymentStatus = :paymentStatus and termHistory.officerTerm.startedAt <= :today and termHistory.officerTerm.endedAt >= :graceFloor and replace(lower(concat(str(termHistory.officerTerm.generation), '대', str(termHistory.officerTerm.phase), '기')), ' ', '') like :keyword))
-                  or (:searchType = 'role' and exists (select roleHistory.id from OfficerHistory roleHistory where roleHistory.member = m and roleHistory.deletedAt is null and roleHistory.paymentStatus = :paymentStatus and roleHistory.officerTerm.startedAt <= :today and roleHistory.officerTerm.endedAt >= :graceFloor and replace(lower(roleHistory.officerRole.name), ' ', '') like :keyword))
+                  or (:searchType = 'term' and exists (select termHistory.id from OfficerHistory termHistory where termHistory.member = m and termHistory.deletedAt is null and (m.status = :memberStatus or termHistory.approvalCount > 0) and termHistory.startedAt <= :today and (termHistory.endedAt is null or termHistory.endedAt >= :today) and termHistory.officerTerm.startedAt <= :today and termHistory.officerTerm.endedAt >= :today and replace(lower(concat(str(termHistory.officerTerm.generation), '대', str(termHistory.officerTerm.phase), '기')), ' ', '') like :keyword))
+                  or (:searchType = 'role' and exists (select roleHistory.id from OfficerHistory roleHistory where roleHistory.member = m and roleHistory.deletedAt is null and (m.status = :memberStatus or roleHistory.approvalCount > 0) and roleHistory.startedAt <= :today and (roleHistory.endedAt is null or roleHistory.endedAt >= :today) and roleHistory.officerTerm.startedAt <= :today and roleHistory.officerTerm.endedAt >= :today and replace(lower(roleHistory.officerRole.name), ' ', '') like :keyword))
                   or (:searchType = 'region' and (replace(lower(concat(coalesce(m.workAddress1, ''), coalesce(m.workAddress2, ''))), ' ', '') like :keyword or (m.homeAddressPublic = true and replace(lower(concat(coalesce(m.homeAddress1, ''), coalesce(m.homeAddress2, ''))), ' ', '') like :keyword)))
               )
               and (:majorIds is null or major.id in :majorIds)
@@ -133,7 +138,6 @@ public interface MemberRepository extends JpaRepository<Member, Long> {
             @Param("roleOrderWeight") int roleOrderWeight,
             @Param("blockedMemberIds") List<Long> blockedMemberIds,
             @Param("memberStatus") MemberStatus memberStatus,
-            @Param("paymentStatus") OfficerPaymentStatus paymentStatus,
             @Param("today") java.time.LocalDate today,
             @Param("graceFloor") java.time.LocalDate graceFloor,
             Pageable pageable
@@ -152,15 +156,18 @@ public interface MemberRepository extends JpaRepository<Member, Long> {
             select history.officerRole.sortOrder
             from OfficerHistory history
             where history.member.id = :memberId
+              and (history.member.status = com.scg.alumni.domain.member.MemberStatus.ACTIVE
+                   or (history.member.status = com.scg.alumni.domain.member.MemberStatus.PENDING and history.approvalCount > 0))
               and history.deletedAt is null
-              and history.paymentStatus = :paymentStatus
+              and history.startedAt <= :today
+              and (history.endedAt is null or history.endedAt >= :today)
               and history.officerTerm.startedAt <= :today
               and history.officerTerm.endedAt >= :graceFloor
+              and history.officerTerm.endedAt >= :today
             order by history.officerTerm.startedAt desc
             """)
     List<Integer> findDirectoryRoleSortOrders(
             @Param("memberId") Long memberId,
-            @Param("paymentStatus") OfficerPaymentStatus paymentStatus,
             @Param("today") java.time.LocalDate today,
             @Param("graceFloor") java.time.LocalDate graceFloor,
             Pageable pageable
@@ -170,14 +177,12 @@ public interface MemberRepository extends JpaRepository<Member, Long> {
      * 지금 주소록에 보이는 임원 수.
      *
      * <p>검색 조건 없이 {@code searchCurrentPaidDirectory} 와 같은 뼈대만 센다 —
-     * 활성 회원, 현행 임기 납부, 내가 차단하지 않은 사람. 홈 화면이 "현행 임기
-     * 납부자 기준" 이라고 적어 두고 목록 한 페이지 크기를 인원수처럼 보여주던
-     * 자리를 실제 수로 바꾸기 위한 것이다.
+     * 승인된 현직 임원 중 내가 차단하지 않은 사람을 납부 여부와 무관하게 센다.
      */
     @Query("""
             select count(m)
             from Member m
-            where m.status = :memberStatus
+            where (m.status = :memberStatus or m.status = com.scg.alumni.domain.member.MemberStatus.PENDING)
               and m.deletedAt is null
               and m.id not in :blockedMemberIds
               and exists (
@@ -186,14 +191,16 @@ public interface MemberRepository extends JpaRepository<Member, Long> {
                   join h.officerTerm term
                   where h.member = m
                     and h.deletedAt is null
-                    and h.paymentStatus = :paymentStatus
+                    and (m.status = :memberStatus or h.approvalCount > 0)
+                    and h.startedAt <= :today
+                    and (h.endedAt is null or h.endedAt >= :today)
                     and term.startedAt <= :today and term.endedAt >= :graceFloor
+                    and term.endedAt >= :today
               )
             """)
     long countCurrentPaidDirectory(
             @Param("blockedMemberIds") List<Long> blockedMemberIds,
             @Param("memberStatus") MemberStatus memberStatus,
-            @Param("paymentStatus") OfficerPaymentStatus paymentStatus,
             @Param("today") java.time.LocalDate today,
             @Param("graceFloor") java.time.LocalDate graceFloor
     );

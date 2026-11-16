@@ -12,25 +12,32 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.web.context.WebApplicationContext;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.annotation.Transactional;
 
 @SpringBootTest
+@Transactional
 class MemberDirectoryControllerTest {
 
     @Autowired
     private WebApplicationContext webApplicationContext;
 
+    @Autowired
+    private JdbcTemplate jdbc;
+
     private MockMvc mockMvc;
 
     @BeforeEach
     void setUp() {
+        jdbc.update("insert into officer_history_approvals (officer_history_id) select id from officer_histories where user_id = 5 and officer_term_id = 3");
         mockMvc = webAppContextSetup(webApplicationContext).build();
     }
 
     @Test
-    void searchReturnsOnlyCurrentPaidOfficers() throws Exception {
+    void searchIncludesCurrentOfficersRegardlessOfPayment() throws Exception {
         mockMvc.perform(get("/api/v1/members"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.items", hasSize(2)));
+                .andExpect(jsonPath("$.items", hasSize(4)));
     }
 
     /**
@@ -45,7 +52,7 @@ class MemberDirectoryControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.items[0].name").value("박성균"))
                 .andExpect(jsonPath("$.items[0].officerRoleName").value("부회장"))
-                .andExpect(jsonPath("$.items[1].name").value("김명륜"))
+                .andExpect(jsonPath("$.items[1].id").value(5))
                 .andExpect(jsonPath("$.items[1].officerRoleName").value("이사"));
     }
 
@@ -67,8 +74,8 @@ class MemberDirectoryControllerTest {
         mockMvc.perform(get("/api/v1/members").param("size", "1").param("cursor", "1"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.items", hasSize(1)))
-                .andExpect(jsonPath("$.items[0].name").value("김명륜"))
-                .andExpect(jsonPath("$.hasNext").value(false));
+                .andExpect(jsonPath("$.items[0].id").value(5))
+                .andExpect(jsonPath("$.hasNext").value(true));
     }
 
     /**
@@ -80,8 +87,8 @@ class MemberDirectoryControllerTest {
     void searchOrdersByRecencyWhenAsked() throws Exception {
         mockMvc.perform(get("/api/v1/members").param("sort", "recent"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.items[0].name").value("김명륜"))
-                .andExpect(jsonPath("$.items[1].name").value("박성균"));
+                .andExpect(jsonPath("$.items[0].id").value(5))
+                .andExpect(jsonPath("$.items[1].id").value(3));
     }
 
     /** 최근 순으로 볼 때도 다음 쪽이 이어져야 한다. */
@@ -89,15 +96,15 @@ class MemberDirectoryControllerTest {
     void searchContinuesWithCursorWhenOrderedByRecency() throws Exception {
         mockMvc.perform(get("/api/v1/members").param("sort", "recent").param("size", "1"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.items[0].name").value("김명륜"))
+                .andExpect(jsonPath("$.items[0].id").value(5))
                 .andExpect(jsonPath("$.hasNext").value(true))
-                .andExpect(jsonPath("$.nextCursor").value(2));
+                .andExpect(jsonPath("$.nextCursor").value(5));
 
-        mockMvc.perform(get("/api/v1/members").param("sort", "recent").param("size", "1").param("cursor", "2"))
+        mockMvc.perform(get("/api/v1/members").param("sort", "recent").param("size", "1").param("cursor", "5"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.items", hasSize(1)))
-                .andExpect(jsonPath("$.items[0].name").value("박성균"))
-                .andExpect(jsonPath("$.hasNext").value(false));
+                .andExpect(jsonPath("$.items[0].id").value(3))
+                .andExpect(jsonPath("$.hasNext").value(true));
     }
 
     @Test
