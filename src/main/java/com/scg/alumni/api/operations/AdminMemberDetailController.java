@@ -46,6 +46,7 @@ public class AdminMemberDetailController {
     private final ClubLeadership clubLeadership;
     private final AdminAuditLog adminAuditLog;
     private final ProfileImageStorage profileImageStorage;
+    private final com.scg.alumni.domain.access.AccessCacheInvalidation invalidation;
 
     @GetMapping
     public Map<String, Object> findMember(@PathVariable Long memberId) {
@@ -56,6 +57,7 @@ public class AdminMemberDetailController {
         response.put("clubMemberships", findClubMemberships(memberId));
         response.put("clubApplications", findClubApplications(memberId));
         response.put("officerHistories", findOfficerHistories(memberId));
+        response.put("officerRoleChanges", findOfficerRoleChanges(memberId));
         response.put("payments", findPayments(memberId));
         response.put("posts", findPosts(memberId));
         response.put("reportsFiled", findReportsFiled(memberId));
@@ -122,6 +124,7 @@ public class AdminMemberDetailController {
     @DeleteMapping
     @Transactional
     public Map<String, Object> deleteMember(@PathVariable Long memberId) {
+        invalidation.afterCommit(memberId);
         requireMember(memberId);
         // 본인 탈퇴는 후임을 정할 때까지 막지만, 사무처의 삭제까지 막을 수는 없다
         // (연락이 닿지 않는 회원을 지우는 일이 있다). 대신 맡고 있던 동호회 자리를
@@ -141,6 +144,7 @@ public class AdminMemberDetailController {
     @PostMapping("/restore")
     @Transactional
     public Map<String, Object> restoreMember(@PathVariable Long memberId) {
+        invalidation.afterCommit(memberId);
         requireMember(memberId);
         jdbcTemplate.update("""
                 update users
@@ -253,12 +257,23 @@ public class AdminMemberDetailController {
         return jdbcTemplate.query("""
                 select oh.id, oh.officer_term_id, ot.generation, ot.phase,
                        oh.officer_role_id, orole.name as officer_role_name,
-                       oh.started_at, oh.ended_at, oh.payment_status
+                       oh.started_at, oh.ended_at, pr.status as payment_status
                 from officer_histories oh
                 join officer_terms ot on ot.id = oh.officer_term_id
                 join officer_roles orole on orole.id = oh.officer_role_id
+                left join payment_records pr on pr.user_id = oh.user_id and pr.officer_term_id = oh.officer_term_id
+                    and pr.deleted_at is null
                 where oh.user_id = ? and oh.deleted_at is null
                 order by ot.generation desc, ot.phase desc
+                """, JdbcResponseMapper.INSTANCE, memberId);
+    }
+
+    private List<Map<String, Object>> findOfficerRoleChanges(Long memberId) {
+        return jdbcTemplate.query("""
+                select h.id, h.officer_history_id, h.officer_term_id, h.officer_role_id,
+                       r.name as officer_role_name, h.started_at, h.ended_at, h.recorded_at
+                from officer_role_change_history h join officer_roles r on r.id = h.officer_role_id
+                where h.user_id = ? order by h.recorded_at desc, h.id desc
                 """, JdbcResponseMapper.INSTANCE, memberId);
     }
 

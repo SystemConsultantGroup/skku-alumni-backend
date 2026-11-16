@@ -3,8 +3,8 @@ package com.scg.alumni.api.operations;
 import com.scg.alumni.api.common.StoredImageUrl;
 import com.scg.alumni.api.common.CursorPageResponse;
 import com.scg.alumni.domain.academic.MajorNames;
+import com.scg.alumni.domain.officer.OfficerTermPolicyProperties;
 import com.scg.alumni.api.common.MarkdownImageExtractor;
-import com.scg.alumni.domain.officer.OfficerTerm;
 import com.scg.alumni.global.security.AuthContext;
 import com.scg.alumni.global.security.PasswordPolicy;
 import com.scg.alumni.infrastructure.push.PushNotificationService;
@@ -50,10 +50,13 @@ public class UserFeatureController {
     private final PushNotificationService pushNotificationService;
     private final ClubLeadership clubLeadership;
     private final PasswordEncoder passwordEncoder;
+    private final OfficerTermPolicyProperties termPolicy;
+    private final com.scg.alumni.domain.access.AccessCacheInvalidation invalidation;
 
     @GetMapping("/me")
     public Map<String, Object> findMe() {
         Long currentUserId = AuthContext.currentMemberId();
+        LocalDate today = LocalDate.now(termPolicy.zone());
         Map<String, Object> profile = MajorNames.hideNightMarkers(jdbcTemplate.queryForObject("""
                 select u.id, u.name, u.student_id, u.profile_image_url, u.email, u.phone, u.home_zipcode, u.home_address1, u.home_address2,
                        u.birth_date, u.birth_date_public, u.phone_public, u.email_public,
@@ -66,9 +69,9 @@ public class UserFeatureController {
                        u.work_address2 as company_address2, co.description as company_description,
                        u.industry_id, i.name as industry_name,
                        ot.generation as officer_generation, ot.phase as officer_phase,
-                       orole.name as officer_role_name
+                       coalesce(orole.name, '성균관대학교 동문') as officer_role_name
                 from users u
-                join majors m on m.id = u.major_id
+                left join majors m on m.id = u.major_id
                 left join majors dm on dm.id = m.display_major_id
                 left join companies co on co.id = u.company_id and co.deleted_at is null
                 left join industries i on i.id = u.industry_id
@@ -78,8 +81,10 @@ public class UserFeatureController {
                     join officer_terms recent_term on recent_term.id = recent.officer_term_id
                     where recent.user_id = u.id
                       and recent.deleted_at is null
-                      and recent_term.started_at <= CURRENT_DATE
-                      and recent_term.ended_at >= DATE_SUB(CURRENT_DATE, INTERVAL ? DAY)
+                      and recent_term.started_at <= ?
+                      and recent_term.ended_at >= ?
+                      and recent.started_at <= ?
+                      and (recent.ended_at is null or recent.ended_at >= ?)
                     order by recent_term.started_at desc
                     limit 1
                 )
@@ -87,7 +92,7 @@ public class UserFeatureController {
                 left join officer_roles orole on orole.id = oh.officer_role_id
                 where u.id = ?
                 """.formatted(MajorNames.displayNameColumn("m", "dm")),
-                JdbcResponseMapper.INSTANCE, OfficerTerm.GRACE_DAYS, currentUserId));
+                JdbcResponseMapper.INSTANCE, today, today, today, today, currentUserId));
         profile.put("hobbies", jdbcTemplate.query("""
                 select h.id, h.name
                 from user_hobbies uh
@@ -224,6 +229,7 @@ public class UserFeatureController {
     @Transactional
     public Map<String, Object> withdrawMe() {
         Long currentUserId = AuthContext.currentMemberId();
+        invalidation.afterCommit(currentUserId);
         List<Map<String, Object>> leaderships = jdbcTemplate.query("""
                 select name,
                        case when president_user_id = ? then '회장' else '총무' end as role_name
@@ -275,6 +281,7 @@ public class UserFeatureController {
 
     @GetMapping("/members/{memberId}")
     public Map<String, Object> findMemberDetail(@PathVariable Long memberId) {
+        LocalDate today = LocalDate.now(termPolicy.zone());
         Map<String, Object> member = jdbcTemplate.query("""
                 select u.id, u.name, u.admission_year, u.graduation_year, u.job_title, u.pr_text,
                        case when u.birth_date_public then u.birth_date else null end as birth_date,
@@ -288,25 +295,46 @@ public class UserFeatureController {
                        i.name as industry_name, ot.generation as officer_generation,
                        ot.phase as officer_phase, orole.name as officer_role_name
                 from users u
-                join majors m on m.id = u.major_id
+                left join majors m on m.id = u.major_id
                 left join majors dm on dm.id = m.display_major_id
                 join officer_histories oh on oh.user_id = u.id and oh.deleted_at is null
                 join officer_terms ot on ot.id = oh.officer_term_id
-                    and ot.started_at <= CURRENT_DATE
-                    and ot.ended_at >= DATE_SUB(CURRENT_DATE, INTERVAL ? DAY)
+                    and ot.started_at <= ? and ot.ended_at >= ?
+                    and oh.started_at <= ? and (oh.ended_at is null or oh.ended_at >= ?)
                 join officer_roles orole on orole.id = oh.officer_role_id
                 left join companies co on co.id = u.company_id and co.deleted_at is null
                 left join industries i on i.id = u.industry_id
-                where u.id = ? and u.status = 'ACTIVE' and u.deleted_at is null and oh.payment_status = 'PAID'
+                where u.id = ? and u.status in ('ACTIVE', 'PENDING') and u.deleted_at is null
                   and not exists (
                       select 1 from user_blocks ub where ub.deleted_at is null and ub.blocker_id = ? and ub.blocked_id = u.id
                   )
                 order by ot.started_at desc
                 """.formatted(MajorNames.displayNameColumn("m", "dm")),
-                JdbcResponseMapper.INSTANCE, OfficerTerm.GRACE_DAYS, memberId, AuthContext.currentMemberId()).stream()
+                JdbcResponseMapper.INSTANCE, today, today, today, today, memberId, AuthContext.currentMemberId()).stream()
                 .findFirst()
                 .map(MajorNames::hideNightMarkers)
                 .orElseThrow(() -> new IllegalArgumentException("임원 정보를 찾을 수 없습니다."));
+        member.put("officerHistories", jdbcTemplate.query("""
+                select 'GENERAL' as organization_type, cast(null as char(255)) as organization_name,
+                       cast(r.name as char(255)) as title, h.started_at, h.ended_at, h.id as history_id,
+                       'CURRENT_RECORD' as record_type, h.updated_at as recorded_at
+                from officer_histories h join officer_roles r on r.id = h.officer_role_id
+                where h.user_id = ? and h.deleted_at is null
+                union all
+                select 'GENERAL' as organization_type, cast(null as char(255)) as organization_name,
+                       cast(r.name as char(255)) as title, h.started_at, h.ended_at, h.id as history_id,
+                       'PREVIOUS_ROLE' as record_type, h.recorded_at
+                from officer_role_change_history h join officer_roles r on r.id = h.officer_role_id
+                join officer_histories current_history on current_history.id = h.officer_history_id
+                where h.user_id = ? and current_history.deleted_at is null
+                union all
+                select 'UNIT' as organization_type, cast(o.name as char(255)) as organization_name,
+                       cast(h.title as char(255)) as title, h.effective_started_at as started_at, h.ended_at, h.id as history_id,
+                       'UNIT_RECORD' as record_type, h.created_at as recorded_at
+                from alumni_organization_officers h join alumni_organizations o on o.id = h.organization_id
+                where h.user_id = ?
+                order by started_at desc, recorded_at desc, history_id desc
+                """, JdbcResponseMapper.INSTANCE, memberId, memberId, memberId));
         member.put("hobbies", jdbcTemplate.queryForList("""
                 select h.name from user_hobbies uh join hobbies h on h.id = uh.hobby_id
                 where uh.user_id = ? and uh.deleted_at is null and h.deleted_at is null order by h.name
@@ -466,18 +494,21 @@ public class UserFeatureController {
     @PostMapping("/member-applications")
     @Transactional
     public Map<String, Object> createApplication(@Valid @RequestBody MemberApplicationRequest request) {
-        jdbcTemplate.update("""
-                insert into member_applications (
-                    name, student_id, phone, email, major_name, admission_year, desired_role,
-                    company_name, job_title, status, created_at, updated_at
-                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                """,
-                request.name(), blankToEmpty(request.studentId()), request.phone(), request.email(),
-                request.majorName(),
-                request.admissionYear(), request.desiredRole(), request.companyName(), request.jobTitle());
-
-        Long id = jdbcTemplate.queryForObject("select max(id) from member_applications", Long.class);
-        return Map.of("id", id, "status", "PENDING");
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("name", request.name());
+        values.put("student_id", blankToEmpty(request.studentId()));
+        values.put("phone", request.phone());
+        values.put("email", request.email());
+        values.put("major_name", request.majorName());
+        values.put("admission_year", request.admissionYear());
+        values.put("desired_role", request.desiredRole());
+        values.put("company_name", request.companyName());
+        values.put("job_title", request.jobTitle());
+        values.put("status", "PENDING");
+        Number id = new SimpleJdbcInsert(jdbcTemplate).withTableName("member_applications")
+                .usingColumns(values.keySet().toArray(String[]::new)).usingGeneratedKeyColumns("id")
+                .executeAndReturnKey(values);
+        return Map.of("id", id.longValue(), "status", "PENDING");
     }
 
     /**
@@ -492,8 +523,8 @@ public class UserFeatureController {
     @GetMapping("/payments/me")
     public Map<String, Object> findMyPayment() {
         Long currentUserId = AuthContext.currentMemberId();
-        LocalDate today = LocalDate.now(ZoneId.of("Asia/Seoul"));
-        LocalDate graceFloor = today.minusDays(OfficerTerm.GRACE_DAYS);
+        LocalDate today = LocalDate.now(termPolicy.zone());
+        LocalDate graceFloor = today;
         List<Map<String, Object>> payments = jdbcTemplate.query("""
                 select pr.id, pr.amount, pr.status, pr.paid_at,
                        ot.generation, ot.phase, ot.started_at, ot.ended_at,
@@ -501,9 +532,9 @@ public class UserFeatureController {
                        (ot.started_at <= ? and ot.ended_at >= ?) as current_term
                 from payment_records pr
                 join officer_terms ot on ot.id = pr.officer_term_id
-                join officer_histories oh on oh.user_id = pr.user_id and oh.officer_term_id = pr.officer_term_id
+                left join officer_histories oh on oh.user_id = pr.user_id and oh.officer_term_id = pr.officer_term_id
                     and oh.deleted_at is null
-                join officer_roles orole on orole.id = oh.officer_role_id
+                left join officer_roles orole on orole.id = oh.officer_role_id
                 where pr.user_id = ? and pr.deleted_at is null
                 order by ot.generation desc, ot.phase desc
                 """, JdbcResponseMapper.INSTANCE, today, graceFloor, currentUserId);

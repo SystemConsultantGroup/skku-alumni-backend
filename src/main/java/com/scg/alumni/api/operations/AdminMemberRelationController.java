@@ -1,6 +1,7 @@
 package com.scg.alumni.api.operations;
 
 import com.scg.alumni.api.common.StoredImageUrl;
+import com.scg.alumni.domain.officer.OfficerTermPolicyProperties;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -8,6 +9,7 @@ import jakarta.validation.constraints.PositiveOrZero;
 import jakarta.validation.constraints.Size;
 import java.net.URI;
 import java.time.LocalDate;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
@@ -45,6 +47,9 @@ public class AdminMemberRelationController {
     private final JdbcTemplate jdbcTemplate;
     private final ClubLeadership clubLeadership;
     private final AdminAuditLog adminAuditLog;
+    private final OfficerAssignment officerAssignment;
+    private final OfficerTermPolicyProperties termPolicy;
+    private final com.scg.alumni.domain.access.AccessCacheInvalidation invalidation;
 
     // 취미 -----------------------------------------------------------------
 
@@ -205,25 +210,32 @@ public class AdminMemberRelationController {
         requireMember(memberId);
         requireRow("officer_terms", request.officerTermId(), "임기를 찾을 수 없습니다.");
         requireRow("officer_roles", request.officerRoleId(), "직책을 찾을 수 없습니다.");
-        String paymentStatus = normalizePaymentStatus(request.paymentStatus());
+        String paymentStatus = currentPaymentStatus(memberId, request.officerTermId(), request.officerRoleId(), request.paymentStatus());
+        Integer deletedHistory = jdbcTemplate.queryForObject("select count(*) from officer_histories where user_id = ? and officer_term_id = ? and deleted_at is not null",
+                Integer.class, memberId, request.officerTermId());
+        if (deletedHistory != null && deletedHistory > 0) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Deleted officer history requires manual review");
+        }
         LocalDate startedAt = request.startedAt() != null ? request.startedAt() : termStartedAt(request.officerTermId());
+        officerAssignment.preservePreviousRole(memberId, request.officerTermId(), request.officerRoleId());
         // 유일 제약(user_id, officer_term_id). 같은 임기가 이미 있으면 그 행을 고친다.
         int revived = jdbcTemplate.update("""
                 update officer_histories
-                set officer_role_id = ?, started_at = ?, ended_at = ?, payment_status = ?,
-                    deleted_at = null, updated_at = CURRENT_TIMESTAMP
-                where user_id = ? and officer_term_id = ?
-                """, request.officerRoleId(), startedAt, request.endedAt(), paymentStatus,
+                set officer_role_id = ?, started_at = ?, ended_at = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                where user_id = ? and officer_term_id = ? and deleted_at is null
+                """, request.officerRoleId(), startedAt, request.endedAt(),
                 memberId, request.officerTermId());
         if (revived == 0) {
             jdbcTemplate.update("""
                     insert into officer_histories (
                         user_id, officer_term_id, officer_role_id, started_at, ended_at,
                         payment_status, created_at, updated_at
-                    ) values (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    ) values (?, ?, ?, ?, ?, 'UNPAID', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     """, memberId, request.officerTermId(), request.officerRoleId(),
-                    startedAt, request.endedAt(), paymentStatus);
+                    startedAt, request.endedAt());
         }
+        officerAssignment.recordApproval(memberId, request.officerTermId());
         adminAuditLog.record("ADD_OFFICER_HISTORY", "officer_history", memberId);
         return Map.of("memberId", memberId, "officerTermId", request.officerTermId());
     }
@@ -235,14 +247,19 @@ public class AdminMemberRelationController {
             @PathVariable Long id,
             @Valid @RequestBody OfficerHistoryUpdateRequest request
     ) {
+        invalidation.afterCommit(memberId);
         requireRow("officer_roles", request.officerRoleId(), "직책을 찾을 수 없습니다.");
-        String paymentStatus = normalizePaymentStatus(request.paymentStatus());
+        Long termId = jdbcTemplate.query("select officer_term_id from officer_histories where id = ? and user_id = ? and deleted_at is null",
+                (rs, row) -> rs.getLong(1), id, memberId).stream().findFirst()
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Officer history not found"));
+        String paymentStatus = currentPaymentStatus(memberId, termId, request.officerRoleId(), request.paymentStatus());
+        officerAssignment.preservePreviousRole(memberId, termId, request.officerRoleId());
         int updated = jdbcTemplate.update("""
                 update officer_histories
-                set officer_role_id = ?, started_at = ?, ended_at = ?, payment_status = ?,
+                set officer_role_id = ?, started_at = ?, ended_at = ?,
                     updated_at = CURRENT_TIMESTAMP
                 where id = ? and user_id = ? and deleted_at is null
-                """, request.officerRoleId(), request.startedAt(), request.endedAt(), paymentStatus, id, memberId);
+                """, request.officerRoleId(), request.startedAt(), request.endedAt(), id, memberId);
         requireUpdated(updated, "임원 이력을 찾을 수 없습니다.");
         adminAuditLog.record("UPDATE_OFFICER_HISTORY", "officer_history", id);
         return Map.of("id", id, "paymentStatus", paymentStatus);
@@ -251,9 +268,77 @@ public class AdminMemberRelationController {
     @DeleteMapping("/officer-histories/{id}")
     @Transactional
     public Map<String, Object> removeOfficerHistory(@PathVariable Long memberId, @PathVariable Long id) {
+        invalidation.afterCommit(memberId);
         softDelete("officer_histories", "user_id", memberId, id, "REMOVE_OFFICER_HISTORY", "officer_history");
         return Map.of("id", id, "deleted", true);
     }
+
+    /** Explicit role transition with a business-effective date. */
+    @PostMapping("/officer-histories/{id}/role-changes")
+    @Transactional
+    public Map<String, Object> changeOfficerRole(@PathVariable Long memberId, @PathVariable Long id,
+            @Valid @RequestBody OfficerRoleChangeRequest request) {
+        invalidation.afterCommit(memberId);
+        requireRow("officer_roles", request.officerRoleId(), "직책을 찾을 수 없습니다.");
+        var rows = jdbcTemplate.query("""
+                select h.officer_term_id, h.officer_role_id, h.started_at, h.ended_at, t.ended_at
+                from officer_histories h join officer_terms t on t.id = h.officer_term_id
+                where h.id = ? and h.user_id = ? and h.deleted_at is null for update
+                """, (rs, row) -> new ExistingOfficerRole(rs.getLong(1), rs.getLong(2),
+                rs.getObject(3, LocalDate.class), rs.getObject(4, LocalDate.class), rs.getObject(5, LocalDate.class)), id, memberId);
+        if (rows.isEmpty()) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Officer history not found");
+        ExistingOfficerRole current = rows.get(0);
+        if (current.roleId().equals(request.officerRoleId()))
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "직책이 기존과 같습니다.");
+        LocalDate effective = request.effectiveAt();
+        if (!effective.isAfter(current.startedAt()) || effective.isAfter(current.termEnd())
+                || effective.isAfter(LocalDate.now(termPolicy.zone()))
+                || (current.endedAt() != null && effective.isAfter(current.endedAt())))
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "직책 변경일을 확인하세요.");
+        jdbcTemplate.update("""
+                insert into officer_role_change_history
+                    (officer_history_id, user_id, officer_term_id, officer_role_id, started_at, ended_at)
+                values (?, ?, ?, ?, ?, ?)
+                """, id, memberId, current.termId(), current.roleId(), current.startedAt(), effective.minusDays(1));
+        jdbcTemplate.update("""
+                update officer_histories set officer_role_id = ?, started_at = ?, updated_at = CURRENT_TIMESTAMP
+                where id = ? and user_id = ? and deleted_at is null
+                """, request.officerRoleId(), effective, id, memberId);
+        adminAuditLog.record("CHANGE_OFFICER_ROLE", "officer_history", id);
+        return Map.of("id", id, "officerRoleId", request.officerRoleId(), "effectiveAt", effective);
+    }
+
+    private record ExistingOfficerRole(Long termId, Long roleId, LocalDate startedAt, LocalDate endedAt, LocalDate termEnd) { }
+
+    @PatchMapping("/officer-role-changes/{id}")
+    @Transactional
+    public Map<String, Object> updatePreviousOfficerRole(@PathVariable Long memberId, @PathVariable Long id,
+            @Valid @RequestBody PreviousOfficerRoleUpdateRequest request) {
+        requireRow("officer_roles", request.officerRoleId(), "직책을 찾을 수 없습니다.");
+        if (request.endedAt() != null && request.endedAt().isBefore(request.startedAt())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "직책 기간을 확인하세요.");
+        }
+        var terms = jdbcTemplate.query("""
+                select t.started_at, t.ended_at from officer_role_change_history h
+                join officer_terms t on t.id = h.officer_term_id
+                where h.id = ? and h.user_id = ? for update
+                """, (rs, row) -> new RoleTermBounds(rs.getObject(1, LocalDate.class), rs.getObject(2, LocalDate.class)), id, memberId);
+        if (terms.isEmpty()) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "이전 직책 이력을 찾을 수 없습니다.");
+        RoleTermBounds term = terms.get(0);
+        if (request.startedAt().isBefore(term.start()) || request.startedAt().isAfter(term.end())
+                || (request.endedAt() != null && request.endedAt().isAfter(term.end()))) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "직책 기간이 임기를 벗어났습니다.");
+        }
+        int changed = jdbcTemplate.update("""
+                update officer_role_change_history set officer_role_id = ?, started_at = ?, ended_at = ?
+                where id = ? and user_id = ?
+                """, request.officerRoleId(), request.startedAt(), request.endedAt(), id, memberId);
+        requireUpdated(changed, "이전 직책 이력을 찾을 수 없습니다.");
+        adminAuditLog.record("UPDATE_PREVIOUS_OFFICER_ROLE", "officer_role_change", id);
+        return Map.of("id", id, "officerRoleId", request.officerRoleId());
+    }
+
+    private record RoleTermBounds(LocalDate start, LocalDate end) { }
 
     // 회비 -----------------------------------------------------------------
 
@@ -263,15 +348,21 @@ public class AdminMemberRelationController {
             @PathVariable Long memberId,
             @Valid @RequestBody PaymentRequest request
     ) {
+        invalidation.afterCommit(memberId);
         requireMember(memberId);
         requireRow("officer_terms", request.officerTermId(), "임기를 찾을 수 없습니다.");
         String status = normalizePaymentStatus(request.status());
+        Integer deletedPayment = jdbcTemplate.queryForObject("select count(*) from payment_records where user_id = ? and officer_term_id = ? and deleted_at is not null",
+                Integer.class, memberId, request.officerTermId());
+        if (deletedPayment != null && deletedPayment > 0) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Deleted payment record requires manual review");
+        }
         int revived = jdbcTemplate.update("""
                 update payment_records
                 set amount = ?, status = ?,
-                    paid_at = case when ? = 'PAID' then CURRENT_TIMESTAMP else null end,
-                    deleted_at = null, updated_at = CURRENT_TIMESTAMP
-                where user_id = ? and officer_term_id = ?
+                    paid_at = case when ? = 'PAID' then coalesce(paid_at, CURRENT_TIMESTAMP) else paid_at end,
+                    updated_at = CURRENT_TIMESTAMP
+                where user_id = ? and officer_term_id = ? and deleted_at is null
                 """, request.amount(), status, status, memberId, request.officerTermId());
         if (revived == 0) {
             jdbcTemplate.update("""
@@ -281,7 +372,6 @@ public class AdminMemberRelationController {
                               CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     """, memberId, request.officerTermId(), request.amount(), status, status);
         }
-        syncOfficerPaymentStatus(memberId, request.officerTermId(), status);
         adminAuditLog.record("ADD_PAYMENT_RECORD", "payment_record", memberId);
         return Map.of("memberId", memberId, "officerTermId", request.officerTermId(), "status", status);
     }
@@ -293,42 +383,26 @@ public class AdminMemberRelationController {
             @PathVariable Long id,
             @Valid @RequestBody PaymentUpdateRequest request
     ) {
+        invalidation.afterCommit(memberId);
         String status = normalizePaymentStatus(request.status());
         int updated = jdbcTemplate.update("""
                 update payment_records
                 set amount = ?, status = ?,
-                    paid_at = case when ? = 'PAID' then coalesce(paid_at, CURRENT_TIMESTAMP) else null end,
+                    paid_at = case when ? = 'PAID' then coalesce(paid_at, CURRENT_TIMESTAMP) else paid_at end,
                     updated_at = CURRENT_TIMESTAMP
                 where id = ? and user_id = ? and deleted_at is null
                 """, request.amount(), status, status, id, memberId);
         requireUpdated(updated, "회비 내역을 찾을 수 없습니다.");
-        Long officerTermId = jdbcTemplate.queryForObject(
-                "select officer_term_id from payment_records where id = ?", Long.class, id);
-        syncOfficerPaymentStatus(memberId, officerTermId, status);
         adminAuditLog.record("UPDATE_PAYMENT_RECORD", "payment_record", id);
         return Map.of("id", id, "status", status);
     }
 
-    /**
-     * 회비 내역을 지운다.
-     *
-     * <p>임원 이력의 납부 상태까지 함께 되돌린다. 주소록은 회비 레코드가 아니라
-     * {@code officer_histories.payment_status} 로 노출을 판단하기 때문이다. 지우고도
-     * 이력이 PAID 로 남으면, 회비 화면에는 아무 기록이 없는 사람이 주소록에는
-     * 납부자로 계속 걸려 있는다. 등록·수정 경로는 이미 둘을 함께 고치고 있었고
-     * 삭제만 빠져 있었다.
-     */
+    /** 회비 원본을 논리 삭제하고 금액과 날짜는 보존한다. */
     @DeleteMapping("/payments/{id}")
     @Transactional
     public Map<String, Object> removePayment(@PathVariable Long memberId, @PathVariable Long id) {
-        Long officerTermId = jdbcTemplate.query(
-                "select officer_term_id from payment_records where id = ? and user_id = ? and deleted_at is null",
-                (resultSet, rowNum) -> resultSet.getLong("officer_term_id"), id, memberId)
-                .stream()
-                .findFirst()
-                .orElse(null);
+        invalidation.afterCommit(memberId);
         softDelete("payment_records", "user_id", memberId, id, "REMOVE_PAYMENT_RECORD", "payment_record");
-        syncOfficerPaymentStatus(memberId, officerTermId, "UNPAID");
         return Map.of("id", id, "deleted", true);
     }
 
@@ -486,21 +560,19 @@ public class AdminMemberRelationController {
 
     // 공통 -----------------------------------------------------------------
 
-    /**
-     * 회비 상태를 임원 이력 쪽에도 맞춘다.
-     *
-     * <p>납부 여부는 payment_records 와 officer_histories 두 곳에 있다. 한쪽만
-     * 고치면 회원 목록의 회비 칸과 상세 화면이 서로 다른 값을 보여준다.
-     */
-    private void syncOfficerPaymentStatus(Long memberId, Long officerTermId, String status) {
-        if (officerTermId == null) {
-            return;
+    private String currentPaymentStatus(Long memberId, Long termId, Long roleId, String requestedValue) {
+        String requestedStatus = StringUtils.hasText(requestedValue) ? normalizePaymentStatus(requestedValue) : null;
+        List<String> status = jdbcTemplate.query("""
+                select status from payment_records where user_id = ? and officer_term_id = ? and deleted_at is null for update
+                """, (rs, row) -> rs.getString(1), memberId, termId);
+        if (status.isEmpty() && (requestedStatus == null || "UNPAID".equals(requestedStatus))) {
+            officerAssignment.ensurePaymentRecord(memberId, termId, roleId);
+            return "UNPAID";
         }
-        jdbcTemplate.update("""
-                update officer_histories
-                set payment_status = ?, updated_at = CURRENT_TIMESTAMP
-                where user_id = ? and officer_term_id = ? and deleted_at is null
-                """, status, memberId, officerTermId);
+        if (status.isEmpty() || (requestedStatus != null && !requestedStatus.equals(status.get(0)))) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Update the payment record separately before changing officer history");
+        }
+        return status.get(0);
     }
 
     private LocalDate termStartedAt(Long officerTermId) {
@@ -609,7 +681,7 @@ public class AdminMemberRelationController {
             @NotNull Long officerRoleId,
             LocalDate startedAt,
             LocalDate endedAt,
-            @NotBlank String paymentStatus
+            String paymentStatus
     ) {
     }
 
@@ -617,9 +689,12 @@ public class AdminMemberRelationController {
             @NotNull Long officerRoleId,
             @NotNull LocalDate startedAt,
             LocalDate endedAt,
-            @NotBlank String paymentStatus
+            String paymentStatus
     ) {
     }
+
+    public record OfficerRoleChangeRequest(@NotNull Long officerRoleId, @NotNull LocalDate effectiveAt) { }
+    public record PreviousOfficerRoleUpdateRequest(@NotNull Long officerRoleId, @NotNull LocalDate startedAt, LocalDate endedAt) { }
 
     public record PaymentRequest(
             @NotNull Long officerTermId,
