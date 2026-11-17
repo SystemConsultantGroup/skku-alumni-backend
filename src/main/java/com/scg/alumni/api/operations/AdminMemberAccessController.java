@@ -27,9 +27,9 @@ public class AdminMemberAccessController {
         if (rows.isEmpty()) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "회원을 찾을 수 없습니다.");
         Object raw = rows.getFirst().get("account_blocked");
         boolean blocked = Boolean.TRUE.equals(raw) || raw instanceof Number n && n.intValue() != 0;
-        AccessLevel level = qualifications.currentLevel(memberId);
-        return new AccessResponse(level, level.permissions(), blocked);
+        var details = qualifications.currentDetails(memberId);
+        return new AccessResponse(details.level(), details.level().permissions(), blocked, details);
     }
 
-    public record AccessResponse(AccessLevel level, Set<Permission> permissions, boolean blocked) { }
+    public record AccessResponse(AccessLevel level, Set<Permission> permissions, boolean blocked, AccessQualificationService.QualificationDetails details) { }
 }
