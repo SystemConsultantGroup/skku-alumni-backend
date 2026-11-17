@@ -107,6 +107,8 @@ public class AdminMemberExcelController {
     private final MinioClient minioClient;
     private final MinioProperties minioProperties;
     private final OfficerAssignment officerAssignment;
+    private final OfficerTermManagementService terms;
+    private final AdminAuditLog audit;
 
     @GetMapping("/template")
     public ResponseEntity<byte[]> downloadTemplate() throws IOException {
@@ -226,7 +228,7 @@ public class AdminMemberExcelController {
                 from users u
                 join majors m on m.id = u.major_id
                 left join companies co on co.id = u.company_id and co.deleted_at is null
-                left join officer_terms ot on ot.current_term = true
+                left join officer_terms ot on ot.started_at <= CURRENT_DATE and ot.ended_at >= CURRENT_DATE
                 left join officer_histories oh on oh.user_id = u.id and oh.officer_term_id = ot.id
                     and oh.deleted_at is null
                 left join officer_roles orole on orole.id = oh.officer_role_id
@@ -367,7 +369,8 @@ public class AdminMemberExcelController {
 
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @Transactional
-    public Map<String, Object> upload(@RequestParam("file") MultipartFile file) {
+    public Map<String, Object> upload(@RequestParam("file") MultipartFile file, @RequestParam(required = false) Long officerTermId) {
+        Long selectedTermId = officerTermId == null ? officerAssignment.findCurrentTermIdOrNull().orElse(null) : terms.resolveSelection(officerTermId);
         if (file.isEmpty()) throw badRequest("업로드할 엑셀 파일을 선택해주세요.");
         if (file.getSize() > 10 * 1024 * 1024) throw badRequest("엑셀 파일은 10MB 이하만 업로드할 수 있습니다.");
         int created = 0;
@@ -468,7 +471,7 @@ public class AdminMemberExcelController {
                 memberId = existing ? existingId : findMemberId(studentId);
 
                 if (officerRoleId != null) {
-                    officerAssignment.assign(memberId, currentTermId(excelRow), officerRoleId);
+                    officerAssignment.assign(memberId, selectedTermId == null ? terms.resolveSelection(null) : selectedTermId, officerRoleId);
                 }
             }
         } catch (ResponseStatusException exception) {
@@ -476,9 +479,12 @@ public class AdminMemberExcelController {
         } catch (Exception exception) {
             throw badRequest("엑셀 파일을 읽을 수 없습니다. .xlsx 형식과 입력값을 확인해주세요.");
         }
+        audit.record("UPLOAD_MEMBERS_EXCEL", "officer_term", selectedTermId);
         return Map.of("created", created, "updated", updated, "total", created + updated,
                 "createdMajors", List.copyOf(createdMajors));
     }
+
+    public Map<String, Object> upload(MultipartFile file) { return upload(file, null); }
 
     /** 학번으로 기존 회원을 찾는다. 학번은 유일 제약이 있어 많아야 한 명이다. */
     private Long findMemberId(String studentId) {
@@ -668,17 +674,6 @@ public class AdminMemberExcelController {
         if (!StringUtils.hasText(roleName)) return null;
         return officerAssignment.findRoleIdOrNull(roleName)
                 .orElseThrow(() -> badRequest(row + "행: 등록되지 않은 총동창회 직책입니다. (" + roleName + ")"));
-    }
-
-    /**
-     * 직책을 붙일 임기. 양식에 임기 칸은 두지 않았다.
-     *
-     * <p>명단을 부을 때 사무처가 다루는 것은 언제나 지금 임기다. 지난 임기의
-     * 이력을 손보는 일은 회원 상세 화면에서 한다.
-     */
-    private Long currentTermId(int row) {
-        return officerAssignment.findCurrentTermIdOrNull()
-                .orElseThrow(() -> badRequest(row + "행: 총동창회 직책을 적었지만 현행 임기가 없습니다. 임기를 먼저 등록해주세요."));
     }
 
     private String normalizeOptionalStatus(String value) {

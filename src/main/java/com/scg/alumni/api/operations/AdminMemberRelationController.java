@@ -48,6 +48,7 @@ public class AdminMemberRelationController {
     private final ClubLeadership clubLeadership;
     private final AdminAuditLog adminAuditLog;
     private final OfficerAssignment officerAssignment;
+    private final OfficerTermManagementService terms;
     private final OfficerTermPolicyProperties termPolicy;
     private final com.scg.alumni.domain.access.AccessCacheInvalidation invalidation;
 
@@ -208,7 +209,7 @@ public class AdminMemberRelationController {
             @Valid @RequestBody OfficerHistoryRequest request
     ) {
         requireMember(memberId);
-        requireRow("officer_terms", request.officerTermId(), "임기를 찾을 수 없습니다.");
+        terms.resolveSelection(request.officerTermId());
         requireRow("officer_roles", request.officerRoleId(), "직책을 찾을 수 없습니다.");
         String paymentStatus = currentPaymentStatus(memberId, request.officerTermId(), request.officerRoleId(), request.paymentStatus());
         Integer deletedHistory = jdbcTemplate.queryForObject("select count(*) from officer_histories where user_id = ? and officer_term_id = ? and deleted_at is not null",

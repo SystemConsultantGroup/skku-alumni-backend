@@ -60,8 +60,8 @@ public class OfficerAssignment {
         return jdbcTemplate.query("""
                 select id
                 from officer_terms
-                where current_term = true
-                order by id desc
+                where started_at <= CURRENT_DATE and ended_at >= CURRENT_DATE
+                order by started_at desc, id desc
                 limit 1
                 """, (resultSet, rowNum) -> resultSet.getLong("id"))
                 .stream()
