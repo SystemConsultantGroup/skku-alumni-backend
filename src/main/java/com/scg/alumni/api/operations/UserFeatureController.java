@@ -1005,6 +1005,11 @@ public class UserFeatureController {
         return requirePost(rows);
     }
 
+    @GetMapping("/community-posts/{id}")
+    public Map<String, Object> findCommunityPost(@PathVariable Long id) {
+        return findPost("COMMUNITY", id);
+    }
+
     @GetMapping("/business-posts")
     public CursorPageResponse<Map<String, Object>> findBusinessPosts(
             @RequestParam(required = false) Long cursor,
