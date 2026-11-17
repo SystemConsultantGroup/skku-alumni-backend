@@ -63,7 +63,7 @@ public class CombinedRosterService {
                     insert into alumni_roster_snapshots (audit_log_id, organization_id, before_snapshot, after_snapshot, after_hash, added_count, ended_count)
                     values (?, ?, ?, ?, ?, ?, ?)
                     """, auditId, group.id(), json(changedBefore), json(changedAfter), stateHash(group.id(), after), result.added(), result.ended());
-            results.add(Map.of("organizationId", group.id(), "name", group.name(), "added", result.added(), "ended", result.ended(), "unchanged", result.unchanged()));
+            results.add(Map.of("organizationId", group.id(), "name", group.name(), "added", result.added(), "ended", result.ended(), "unchanged", result.unchanged(), "createdUsers", result.createdUsers()));
         }
         return Map.of("jobId", auditId, "organizations", results);
     }
