@@ -57,7 +57,7 @@ public class UnifiedSearchRepository {
                        case when lower(p.title) like ? then 3
                             when lower(coalesce(u.name, a.name, '')) like ? then 2 else 1 end as relevance,
                        case when u.status = 'WITHDRAWN' then '탈퇴한 사용자' else coalesce(u.name, a.name) end as authorName
-                from posts p left join clubs c on c.id = p.club_id and c.deleted_at is null left join users u on u.id = p.user_id and u.deleted_at is null
+                from posts p left join clubs c on c.id = p.club_id left join users u on u.id = p.user_id and u.deleted_at is null
                 left join admins a on a.id = p.admin_id
                 where p.deleted_at is null and p.status = 'PUBLISHED' and %s
                   and (p.post_kind <> 'CLUB' or (p.club_id is not null and u.id is not null))
