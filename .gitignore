@@ -30,3 +30,7 @@ application-local.yml
 
 ### OS ###
 .DS_Store
+
+### Local task context ###
+docs/CODEX_SEARCH_TASK_CONTEXT.md
+docs/CODEX_PROJECT_CONTEXT.md
