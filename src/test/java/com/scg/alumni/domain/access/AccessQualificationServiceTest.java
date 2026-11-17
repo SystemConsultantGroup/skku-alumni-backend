@@ -61,6 +61,36 @@ class AccessQualificationServiceTest {
     }
 
     @Test
+    void nullEndDateGetsSevenDayGraceButEarlyRetirementDoesNot() {
+        jdbc.update("update users set status = 'PENDING' where id = 1");
+        jdbc.update("insert into officer_terms (generation, phase, started_at, ended_at, current_term) values (903, 1, '2040-05-01', '2041-04-30', true)");
+        long term = jdbc.queryForObject("select max(id) from officer_terms", Long.class);
+        jdbc.update("insert into officer_histories (user_id, officer_term_id, officer_role_id, started_at, ended_at) values (1, ?, 1, '2040-05-01', null)", term);
+        approve(1, term);
+        jdbc.update("insert into payment_records (user_id, officer_term_id, amount, status) values (1, ?, 100, 'PAID')", term);
+        assertThat(service.levelOn(1, LocalDate.of(2041, 5, 7))).isEqualTo(AccessLevel.FULL);
+        assertThat(service.levelOn(1, LocalDate.of(2041, 5, 8))).isEqualTo(AccessLevel.NONE);
+        jdbc.update("update officer_histories set ended_at = '2041-04-01' where user_id = 1 and officer_term_id = ?", term);
+        assertThat(service.levelOn(1, LocalDate.of(2041, 4, 2))).isEqualTo(AccessLevel.NONE);
+        assertThat(service.levelOn(1, LocalDate.of(2041, 5, 1))).isEqualTo(AccessLevel.NONE);
+        jdbc.update("update officer_histories set ended_at = null, deleted_at = CURRENT_TIMESTAMP where user_id = 1 and officer_term_id = ?", term);
+        assertThat(service.levelOn(1, LocalDate.of(2041, 5, 1))).isEqualTo(AccessLevel.NONE);
+    }
+
+    @Test
+    void configurableGracePeriodControlsTermExpiry() {
+        jdbc.update("update users set status = 'PENDING' where id = 1");
+        jdbc.update("insert into officer_terms (generation, phase, started_at, ended_at, current_term) values (904, 1, '2040-05-01', '2041-04-30', false)");
+        long term = jdbc.queryForObject("select max(id) from officer_terms", Long.class);
+        jdbc.update("insert into officer_histories (user_id, officer_term_id, officer_role_id, started_at) values (1, ?, 1, '2040-05-01')", term);
+        approve(1, term);
+        var policy = new com.scg.alumni.domain.officer.OfficerTermPolicyProperties(2, java.time.ZoneId.of("Asia/Seoul"));
+        var configured = new AccessQualificationService(jdbc, policy);
+        assertThat(configured.levelOn(1, LocalDate.of(2041, 5, 2))).isEqualTo(AccessLevel.LIMITED);
+        assertThat(configured.levelOn(1, LocalDate.of(2041, 5, 3))).isEqualTo(AccessLevel.NONE);
+    }
+
+    @Test
     void pendingLegacyHistoryIsNotAnApprovalButExplicitApprovalGrantsAccess() {
         jdbc.update("update users set status = 'PENDING' where id = 1");
         jdbc.update("insert into officer_terms (generation, phase, started_at, ended_at, current_term) values (902, 1, '2040-05-01', '2041-04-30', false)");
@@ -69,6 +99,33 @@ class AccessQualificationServiceTest {
         assertThat(service.levelOn(1, LocalDate.of(2040, 6, 1))).isEqualTo(AccessLevel.NONE);
         approve(1, term);
         assertThat(service.levelOn(1, LocalDate.of(2040, 6, 1))).isEqualTo(AccessLevel.LIMITED);
+    }
+
+    @Test
+    void futureApprovedOfficerHasNoEarlyAccess() {
+        jdbc.update("update users set status = 'ACTIVE' where id = 1");
+        jdbc.update("insert into officer_terms (generation, phase, started_at, ended_at, current_term) values (905, 1, '2040-05-01', '2041-04-30', false)");
+        long term = jdbc.queryForObject("select max(id) from officer_terms", Long.class);
+        jdbc.update("insert into officer_histories (user_id, officer_term_id, officer_role_id, started_at) values (1, ?, 1, '2040-05-01')", term);
+        approve(1, term);
+        assertThat(service.levelOn(1, LocalDate.of(2040, 4, 30))).isEqualTo(AccessLevel.NONE);
+        assertThat(service.levelOn(1, LocalDate.of(2040, 5, 1))).isEqualTo(AccessLevel.LIMITED);
+        jdbc.update("update users set deleted_at = CURRENT_TIMESTAMP where id = 1");
+        assertThat(service.levelOn(1, LocalDate.of(2040, 5, 1))).isEqualTo(AccessLevel.NONE);
+    }
+
+    @Test
+    void rejectedApplicationStatusDoesNotReplaceApprovalOrAccountBlock() {
+        LocalDate date = LocalDate.of(2042, 6, 1);
+        jdbc.update("update users set status = 'REJECTED', account_blocked = false where id = 1");
+        jdbc.update("insert into officer_terms (generation, phase, started_at, ended_at, current_term) values (906, 1, '2042-05-01', '2043-04-30', false)");
+        long term = jdbc.queryForObject("select max(id) from officer_terms", Long.class);
+        jdbc.update("insert into officer_histories (user_id, officer_term_id, officer_role_id, started_at) values (1, ?, 1, '2042-05-01')", term);
+        assertThat(service.levelOn(1, date)).isEqualTo(AccessLevel.NONE);
+        approve(1, term);
+        assertThat(service.levelOn(1, date)).isEqualTo(AccessLevel.LIMITED);
+        jdbc.update("update users set account_blocked = true where id = 1");
+        assertThat(service.levelOn(1, date)).isEqualTo(AccessLevel.NONE);
     }
 
     private void approve(long userId, long termId) {

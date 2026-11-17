@@ -1,6 +1,7 @@
 package com.scg.alumni.api.operations;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.scg.alumni.domain.organization.AlumniOrganizationService;
 import com.scg.alumni.global.security.AuthScope;
@@ -47,6 +48,17 @@ class OfficerDetailHistoryTest {
         assertThat(histories).hasSize(2);
         assertThat(histories.get(0).get("organizationType")).isEqualTo("GENERAL");
         assertThat(histories.get(1).get("organizationType")).isEqualTo("UNIT");
+    }
+
+    @Test
+    void unapprovedHistoryIsNotExposedAsCurrentOfficer() {
+        jdbc.update("delete from officer_history_approvals where officer_history_id in (select id from officer_histories where user_id = 3)");
+        SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
+                new AuthenticatedPrincipal(3L, AuthScope.MEMBER, "Member"), null));
+        assertThat(controller.findMe().get("officerRoleName")).isEqualTo("성균관대학교 동문");
+        SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
+                new AuthenticatedPrincipal(1L, AuthScope.MEMBER, "Member"), null));
+        assertThatThrownBy(() -> controller.findMemberDetail(3L)).isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test

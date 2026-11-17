@@ -4,7 +4,6 @@ import com.scg.alumni.api.common.CursorPageResponse;
 import com.scg.alumni.domain.academic.MajorCatalog;
 import com.scg.alumni.domain.member.Member;
 import com.scg.alumni.domain.member.MemberRepository;
-import com.scg.alumni.domain.member.MemberStatus;
 import com.scg.alumni.domain.officer.OfficerTermPolicyProperties;
 import java.time.LocalDate;
 import java.time.ZoneId;
@@ -72,7 +71,6 @@ public class MemberDirectoryService {
                 orderByRole ? directoryRoleSortOrder(cursor, today) : null,
                 orderByRole ? 1 : 0,
                 blockedMemberIds,
-                MemberStatus.ACTIVE,
                 today,
                 today,
                 PageRequest.of(0, pageSize + 1)
@@ -134,7 +132,6 @@ public class MemberDirectoryService {
         LocalDate today = LocalDate.now(termPolicy.zone());
         return memberRepository.countCurrentPaidDirectory(
                 blockedMemberIds(),
-                MemberStatus.ACTIVE,
                 today,
                 today);
     }

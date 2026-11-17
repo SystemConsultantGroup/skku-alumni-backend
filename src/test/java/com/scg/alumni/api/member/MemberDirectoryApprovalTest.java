@@ -6,7 +6,6 @@ import com.scg.alumni.domain.access.AccessLevel;
 import com.scg.alumni.domain.access.AccessQualificationService;
 import com.scg.alumni.domain.member.Member;
 import com.scg.alumni.domain.member.MemberRepository;
-import com.scg.alumni.domain.member.MemberStatus;
 import jakarta.persistence.EntityManager;
 import java.time.LocalDate;
 import java.util.List;
@@ -41,9 +40,9 @@ class MemberDirectoryApprovalTest {
                     if (approved) jdbc.update("insert into officer_history_approvals (officer_history_id) values (?)", history);
                     jdbc.update("update payment_records set status = ? where user_id = 1 and officer_term_id = ?", payment, term);
                     entityManager.clear();
-                    boolean visible = status.equals("ACTIVE") || approved;
+                    boolean visible = approved;
                     assertThat(directory(date)).hasSize(visible ? 1 : 0);
-                    assertThat(members.countCurrentPaidDirectory(List.of(-1L), MemberStatus.ACTIVE, date, date)).isEqualTo(visible ? 1 : 0);
+                    assertThat(members.countCurrentPaidDirectory(List.of(-1L), date, date)).isEqualTo(visible ? 1 : 0);
                     assertThat(access.levelAt(1, date)).isEqualTo(!visible ? AccessLevel.NONE : payment.equals("PAID") ? AccessLevel.FULL : AccessLevel.LIMITED);
                 }
             }
@@ -89,6 +88,6 @@ class MemberDirectoryApprovalTest {
     private List<Member> directory(LocalDate date) {
         return members.searchCurrentPaidDirectory("%approvalmatrix%", "all", null, null, List.of(-1L), null,
                 null, null, null, null, null, null, null, null, null, 1, List.of(-1L),
-                MemberStatus.ACTIVE, date, date.minusDays(7), PageRequest.of(0, 50));
+                date, date.minusDays(7), PageRequest.of(0, 50));
     }
 }

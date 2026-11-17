@@ -59,6 +59,8 @@ public class AdminPushNotificationController {
     private final JdbcTemplate jdbcTemplate;
     private final PushNotificationService pushNotificationService;
     private final AdminAuditLog adminAuditLog;
+    private final com.scg.alumni.domain.officer.OfficerTermPolicyProperties termPolicy;
+    private final com.scg.alumni.domain.access.AccessPermissionCache permissionCache;
 
     /**
      * 보낼 사람을 고르는 목록.
@@ -90,7 +92,7 @@ public class AdminPushNotificationController {
                        coalesce(dt.device_count, 0) as device_count
                 from users u
                 left join majors m on m.id = u.major_id
-                left join officer_terms ot on ot.current_term = true
+                left join officer_terms ot on ot.started_at <= CURRENT_DATE and ot.ended_at >= CURRENT_DATE
                 left join officer_histories oh on oh.user_id = u.id and oh.officer_term_id = ot.id and oh.deleted_at is null
                 left join officer_roles orole on orole.id = oh.officer_role_id
                 left join (
@@ -100,12 +102,12 @@ public class AdminPushNotificationController {
                     group by user_id
                 ) dt on dt.user_id = u.id
                 where u.deleted_at is null
-                  and u.status = 'ACTIVE'
+                  and __ELIGIBILITY__
                   and (? is null or lower(u.name) like ? or lower(coalesce(u.student_id, '')) like ?
                        or lower(coalesce(m.name, '')) like ?)
                   and (? is null or (u.notification_enabled = true and coalesce(dt.device_count, 0) > 0))
                   and (? is null or oh.officer_role_id = ?)
-                """, "order by u.id desc", AdminPaging.args(
+                """.replace("__ELIGIBILITY__", com.scg.alumni.domain.access.AccessEligibilitySql.forUser("u", termPolicy.accessGraceDays())), "order by u.id desc", AdminPaging.args(
                 normalizedKeyword, normalizedKeyword, normalizedKeyword, normalizedKeyword,
                 reachableOnly, officerRoleId, officerRoleId), page, size);
     }
@@ -237,7 +239,7 @@ public class AdminPushNotificationController {
                 Map<String, Object> row = byId.get(id);
                 // 목록을 띄운 뒤 회원이 지워지거나 탈퇴하는 사이가 있다. 이름조차 없으면
                 // 번호라도 보여줘야 사무처가 무엇이 빠졌는지 짚을 수 있다.
-                if (row == null || row.get("deleted_at") != null || !"ACTIVE".equals(row.get("status"))) {
+                if (row == null || row.get("deleted_at") != null || permissionCache.currentLevel(id) == com.scg.alumni.domain.access.AccessLevel.NONE) {
                     unavailable.add(row == null ? "회원 " + id : text(row.get("name")));
                     continue;
                 }

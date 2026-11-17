@@ -43,11 +43,13 @@ public class PushNotificationService {
     private static final int BATCH_SIZE = 500;
 
     private final JdbcTemplate jdbcTemplate;
+    private final com.scg.alumni.domain.officer.OfficerTermPolicyProperties termPolicy;
     private final ObjectProvider<FirebaseApp> firebaseApp;
 
-    public PushNotificationService(JdbcTemplate jdbcTemplate, ObjectProvider<FirebaseApp> firebaseApp) {
+    public PushNotificationService(JdbcTemplate jdbcTemplate, ObjectProvider<FirebaseApp> firebaseApp, com.scg.alumni.domain.officer.OfficerTermPolicyProperties termPolicy) {
         this.jdbcTemplate = jdbcTemplate;
         this.firebaseApp = firebaseApp;
+        this.termPolicy = termPolicy;
     }
 
     /** 공지·뉴스. 알림을 켜 둔 현행 임원 전체에게 보낸다. */
@@ -59,20 +61,20 @@ public class PushNotificationService {
                 join users u on u.id = dt.user_id
                 where dt.deleted_at is null
                   and u.deleted_at is null
-                  and u.status = 'ACTIVE'
+                  and __ELIGIBILITY__
                   and u.notification_enabled = true
                   and u.notice_notification_enabled = true
-                """, String.class);
+                """.replace("__ELIGIBILITY__", com.scg.alumni.domain.access.AccessEligibilitySql.forUser("u", termPolicy.accessGraceDays())), String.class);
         String pushTitle = "NOTICE".equals(postKind) ? "새 공지" : "새 소식";
         // 알림 센터에는 기기가 없는 회원도 받는다. 푸시는 기기로, 센터는 계정으로 닿는다.
         List<Long> recipients = jdbcTemplate.queryForList("""
                 select u.id
                 from users u
                 where u.deleted_at is null
-                  and u.status = 'ACTIVE'
+                  and __ELIGIBILITY__
                   and u.notification_enabled = true
                   and u.notice_notification_enabled = true
-                """, Long.class);
+                """.replace("__ELIGIBILITY__", com.scg.alumni.domain.access.AccessEligibilitySql.forUser("u", termPolicy.accessGraceDays())), Long.class);
         Long notificationId = createNotification("official-post", pushTitle, title, "/notices/" + postId, null, recipients);
         send(tokens, pushTitle, title,
                 Map.of("type", "official-post", "postKind", postKind, "postId", String.valueOf(postId),
@@ -97,11 +99,11 @@ public class PushNotificationService {
                   and u.deleted_at is null
                   and cm.club_id = ?
                   and cm.left_at is null and cm.deleted_at is null
-                  and u.status = 'ACTIVE'
+                  and __ELIGIBILITY__
                   and u.notification_enabled = true
                   and u.club_notification_enabled = true
                   and u.id <> ?
-                """, String.class, clubId, authorId);
+                """.replace("__ELIGIBILITY__", com.scg.alumni.domain.access.AccessEligibilitySql.forUser("u", termPolicy.accessGraceDays())), String.class, clubId, authorId);
         List<Long> recipients = jdbcTemplate.queryForList("""
                 select u.id
                 from users u
@@ -109,11 +111,11 @@ public class PushNotificationService {
                 where u.deleted_at is null
                   and cm.club_id = ?
                   and cm.left_at is null and cm.deleted_at is null
-                  and u.status = 'ACTIVE'
+                  and __ELIGIBILITY__
                   and u.notification_enabled = true
                   and u.club_notification_enabled = true
                   and u.id <> ?
-                """, Long.class, clubId, authorId);
+                """.replace("__ELIGIBILITY__", com.scg.alumni.domain.access.AccessEligibilitySql.forUser("u", termPolicy.accessGraceDays())), Long.class, clubId, authorId);
         String section = "RESEARCH".equals(clubCategory) ? "research" : "club";
         Long notificationId = createNotification("club-post", clubName, title,
                 "/community/" + section + "/" + clubId + "/posts/" + postId, null, recipients);
@@ -150,9 +152,9 @@ public class PushNotificationService {
                 join device_tokens dt on dt.user_id = u.id and dt.deleted_at is null
                 where u.id in (%s)
                   and u.deleted_at is null
-                  and u.status = 'ACTIVE'
+                  and __ELIGIBILITY__
                   and u.notification_enabled = true
-                """.formatted(placeholders), memberIds.toArray());
+                """.replace("__ELIGIBILITY__", com.scg.alumni.domain.access.AccessEligibilitySql.forUser("u", termPolicy.accessGraceDays())).formatted(placeholders), memberIds.toArray());
 
         Map<Long, Integer> devicesByMember = new LinkedHashMap<>();
         List<String> tokens = new ArrayList<>();
@@ -168,9 +170,9 @@ public class PushNotificationService {
                 from users u
                 where u.id in (%s)
                   and u.deleted_at is null
-                  and u.status = 'ACTIVE'
+                  and __ELIGIBILITY__
                   and u.notification_enabled = true
-                """.formatted(placeholders), Long.class, memberIds.toArray());
+                """.replace("__ELIGIBILITY__", com.scg.alumni.domain.access.AccessEligibilitySql.forUser("u", termPolicy.accessGraceDays())).formatted(placeholders), Long.class, memberIds.toArray());
         Long notificationId = createNotification("admin-message", title, body,
                 link == null ? null : link.path(), link == null ? null : link.externalUrl(), recipients);
 
@@ -236,8 +238,8 @@ public class PushNotificationService {
     void deliverInquiryAnswer(Long userId, Long inquiryId, String inquiryTitle) {
         List<Long> recipients = jdbcTemplate.queryForList("""
                 select u.id from users u
-                where u.id = ? and u.deleted_at is null and u.status = 'ACTIVE'
-                """, Long.class, userId);
+                where u.id = ? and u.deleted_at is null and __ELIGIBILITY__
+                """.replace("__ELIGIBILITY__", com.scg.alumni.domain.access.AccessEligibilitySql.forUser("u", termPolicy.accessGraceDays())), Long.class, userId);
         if (recipients.isEmpty()) {
             return;
         }
