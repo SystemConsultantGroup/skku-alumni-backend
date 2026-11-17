@@ -49,6 +49,8 @@ public class AdminFeatureController {
     private final AdminRoleGuard adminRoleGuard;
     private final PasswordEncoder passwordEncoder;
     private final OfficerAssignment officerAssignment;
+    private final OfficerTermManagementService terms;
+    private final com.scg.alumni.domain.officer.OfficerTermPolicyProperties termPolicy;
     private final AdministrativePersonService administrativePeople;
     private final com.scg.alumni.domain.access.AccessCacheInvalidation invalidation;
 
@@ -56,7 +58,7 @@ public class AdminFeatureController {
     public Map<String, Object> findDashboard() {
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("stats", Map.of(
-                "activeMembers", count("select count(*) from users where deleted_at is null and status = 'ACTIVE'"),
+                "activeMembers", count("select count(*) from users u where " + com.scg.alumni.domain.access.AccessEligibilitySql.forUser("u", termPolicy.accessGraceDays())),
                 "pendingMembers", count("select count(*) from users where deleted_at is null and status = 'PENDING'"),
                 "withdrawnMembers", count("select count(*) from users where deleted_at is null and status = 'WITHDRAWN'"),
                 // 임원 이력만 세면 탈퇴하거나 삭제된 회원의 이력까지 들어간다. 그 사람들은
@@ -66,18 +68,22 @@ public class AdminFeatureController {
                         from officer_histories oh
                         join officer_terms ot on ot.id = oh.officer_term_id
                         join users u on u.id = oh.user_id
+                        join officer_history_approvals approval on approval.officer_history_id = oh.id
                         join payment_records pr on pr.user_id = oh.user_id and pr.officer_term_id = ot.id and pr.deleted_at is null
-                        where oh.deleted_at is null and ot.current_term = true and pr.status = 'PAID'
-                          and u.deleted_at is null and u.status <> 'WITHDRAWN'
+                        where oh.deleted_at is null and ot.started_at <= CURRENT_DATE and ot.ended_at >= CURRENT_DATE and pr.status = 'PAID'
+                          and oh.started_at <= CURRENT_DATE and (oh.ended_at is null or oh.ended_at >= CURRENT_DATE)
+                          and u.deleted_at is null and u.account_blocked = false and u.status <> 'WITHDRAWN'
                         """),
                 "unpaidCurrentOfficers", count("""
                         select count(*)
                         from officer_histories oh
                         join officer_terms ot on ot.id = oh.officer_term_id
                         join users u on u.id = oh.user_id
+                        join officer_history_approvals approval on approval.officer_history_id = oh.id
                         join payment_records pr on pr.user_id = oh.user_id and pr.officer_term_id = ot.id and pr.deleted_at is null
-                        where oh.deleted_at is null and ot.current_term = true and pr.status = 'UNPAID'
-                          and u.deleted_at is null and u.status <> 'WITHDRAWN'
+                        where oh.deleted_at is null and ot.started_at <= CURRENT_DATE and ot.ended_at >= CURRENT_DATE and pr.status = 'UNPAID'
+                          and oh.started_at <= CURRENT_DATE and (oh.ended_at is null or oh.ended_at >= CURRENT_DATE)
+                          and u.deleted_at is null and u.account_blocked = false and u.status <> 'WITHDRAWN'
                         """),
                 "pendingApplications", count("select count(*) from member_applications where status = 'PENDING'"),
                 "pendingReports", count("select count(*) from reports where deleted_at is null and status = 'PENDING'"),
@@ -143,18 +149,18 @@ public class AdminFeatureController {
                 from users u
                 left join majors m on m.id = u.major_id
                 left join companies co on co.id = u.company_id and co.deleted_at is null
-                left join officer_terms ot on ot.current_term = true
+                left join officer_terms ot on ot.started_at <= CURRENT_DATE and ot.ended_at >= CURRENT_DATE
                 left join officer_histories oh on oh.user_id = u.id and oh.officer_term_id = ot.id and oh.deleted_at is null
                 left join officer_roles orole on orole.id = oh.officer_role_id
                 left join payment_records pr on pr.user_id = u.id and pr.officer_term_id = ot.id and pr.deleted_at is null
                 where (? = true or u.deleted_at is null)
                   and (? is null or lower(u.name) like ? or lower(m.name) like ? or lower(coalesce(co.name, '')) like ?)
                   and (? is null or pr.status = ?)
-                  and (? is null or u.status = ? or (? = true and u.status in ('ACTIVE', 'PENDING')))
+                  and (? is null or u.status = ? or (? = true and __ELIGIBILITY__))
                   and (? is null or oh.officer_role_id = ?)
                   and (? = false or u.login_id is null or u.login_id = ''
                        or u.password is null or u.password = '')
-                """, "order by u.id desc", AdminPaging.args(
+                """.replace("__ELIGIBILITY__", com.scg.alumni.domain.access.AccessEligibilitySql.forUser("u", termPolicy.accessGraceDays())), "order by u.id desc", AdminPaging.args(
                 showDeleted,
                 normalizedKeyword, normalizedKeyword, normalizedKeyword, normalizedKeyword,
                 normalizedPaymentStatus, normalizedPaymentStatus,
@@ -169,19 +175,8 @@ public class AdminFeatureController {
             @PathVariable Long id,
             @Valid @RequestBody StatusUpdateRequest request
     ) {
-        invalidation.afterCommit(id);
-        String status = normalizeRequiredStatus(request.status(), "PENDING", "ACTIVE", "REJECTED");
-        int updated = jdbcTemplate.update("""
-                update users
-                set status = ?, updated_at = CURRENT_TIMESTAMP
-                where id = ?
-                """, status, id);
-        if (updated == 0) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "회원을 찾을 수 없습니다.");
-        }
-
-        audit("UPDATE_MEMBER_STATUS", "user", id);
-        return Map.of("id", id, "status", status);
+        throw new ResponseStatusException(HttpStatus.GONE,
+                "회원 상태 변경은 중단되었습니다. 임원 신청 심사 또는 계정 차단 API를 이용해주세요.");
     }
 
     @GetMapping("/applications")
@@ -229,7 +224,7 @@ public class AdminFeatureController {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Application has already been reviewed");
         }
         if ("APPROVED".equals(status)) {
-            ApplicationApproval approval = approveApplication(id, request.officerRoleId(), request.existingUserId(), request.confirmedNoMatch());
+            ApplicationApproval approval = approveApplication(id, request.officerRoleId(), request.existingUserId(), request.confirmedNoMatch(), request.officerTermId());
             Long userId = approval.userId();
             audit("APPROVE_APPLICATION", "member_application", id);
             if (approval.created()) {
@@ -353,7 +348,7 @@ public class AdminFeatureController {
     @GetMapping("/officer-terms")
     public List<Map<String, Object>> findOfficerTerms() {
         return jdbcTemplate.query("""
-                select id, generation, phase, started_at, ended_at, current_term
+                select id, generation, phase, started_at, ended_at, (started_at <= CURRENT_DATE and ended_at >= CURRENT_DATE) as current_term
                 from officer_terms
                 order by generation desc, phase desc
                 """, JdbcResponseMapper.INSTANCE);
@@ -381,13 +376,13 @@ public class AdminFeatureController {
                 .findFirst()
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "해당 임기를 찾을 수 없습니다."));
 
-        Long officerRoleId = request.officerRoleId() != null
-                ? request.officerRoleId()
-                : findLatestOfficerRoleId(request.userId());
-        if (officerRoleId == null) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "직책 이력이 없는 회원입니다. 직책을 함께 지정해주세요.");
-        }
-        officerAssignment.ensureHistory(request.userId(), request.officerTermId(), officerRoleId);
+        Long officerRoleId = jdbcTemplate.query("""
+                select officer_role_id from officer_histories
+                where user_id = ? and officer_term_id = ? and deleted_at is null
+                """, (rs, row) -> rs.getLong(1), request.userId(), request.officerTermId()).stream().findFirst()
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT, "해당 임기의 임원 이력을 먼저 등록해주세요."));
+        if (request.officerRoleId() != null && !request.officerRoleId().equals(officerRoleId))
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "회비 등록으로 임원 직책을 변경할 수 없습니다.");
         officerAssignment.ensurePaymentRecord(request.userId(), request.officerTermId(), officerRoleId);
         // 공직자 부회장(50만원)처럼 예외가 있어 사무처가 금액을 지정할 수 있다.
         if (request.amount() != null) {
@@ -917,7 +912,7 @@ public class AdminFeatureController {
         throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "허용되지 않는 상태값입니다.");
     }
 
-    private ApplicationApproval approveApplication(Long applicationId, Long approvedRoleId, Long existingUserId, boolean confirmedNoMatch) {
+    private ApplicationApproval approveApplication(Long applicationId, Long approvedRoleId, Long existingUserId, boolean confirmedNoMatch, Long selectedTermId) {
         Map<String, Object> application = jdbcTemplate.query("""
                 select id, name, student_id, phone, email, major_name, admission_year, desired_role,
                        company_name, job_title, status
@@ -933,7 +928,7 @@ public class AdminFeatureController {
                 ? officerAssignment.findRoleId(text(application.get("desiredRole"))) : approvedRoleId;
         Integer roleCount = jdbcTemplate.queryForObject("select count(*) from officer_roles where id = ?", Integer.class, officerRoleId);
         if (roleCount == null || roleCount == 0) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Officer role not found");
-        Long officerTermId = officerAssignment.findCurrentTermId();
+        Long officerTermId = terms.resolveSelection(selectedTermId);
         Long companyId = findOrCreateCompanyId(text(application.get("companyName")));
         ApplicationApproval approval = findOrCreateApplicationUser(application, majorId, companyId, existingUserId, confirmedNoMatch);
         Long userId = approval.userId();
@@ -955,7 +950,7 @@ public class AdminFeatureController {
         Integer admissionYear = number(application.get("admissionYear"));
 
         if (selectedUserId != null) {
-            Integer count = jdbcTemplate.queryForObject("select count(*) from users where id = ? and deleted_at is null and status not in ('WITHDRAWN', 'REJECTED')", Integer.class, selectedUserId);
+            Integer count = jdbcTemplate.queryForObject("select count(*) from users where id = ? and deleted_at is null and status <> 'WITHDRAWN'", Integer.class, selectedUserId);
             if (count == null || count == 0) throw new ResponseStatusException(HttpStatus.CONFLICT, "Selected user is unavailable");
             return new ApplicationApproval(selectedUserId, false);
         }
@@ -965,7 +960,7 @@ public class AdminFeatureController {
             var exact = candidates.stream().filter(candidate -> text(application.get("name")).equals(text(candidate.get("name")))
                     && studentId.equals(text(candidate.get("student_id")))
                     && normalizePhone(phone).equals(normalizePhone(text(candidate.get("phone"))))
-                    && !List.of("WITHDRAWN", "REJECTED").contains(text(candidate.get("status")))).toList();
+                    && !"WITHDRAWN".equals(text(candidate.get("status")))).toList();
             if (exact.size() == 1 && candidates.size() == 1) {
                 return new ApplicationApproval(((Number) exact.get(0).get("id")).longValue(), false);
             }
@@ -1064,20 +1059,6 @@ public class AdminFeatureController {
     }
 
     /** 다른 임기의 납부를 기록할 때 쓸 직책. 가장 최근 임기의 직책을 그대로 이어 쓴다. */
-    private Long findLatestOfficerRoleId(Long userId) {
-        return jdbcTemplate.query("""
-                select oh.officer_role_id
-                from officer_histories oh
-                join officer_terms ot on ot.id = oh.officer_term_id
-                where oh.user_id = ? and oh.deleted_at is null
-                order by ot.generation desc, ot.phase desc
-                limit 1
-                """, (resultSet, rowNum) -> resultSet.getLong(1), userId)
-                .stream()
-                .findFirst()
-                .orElse(null);
-    }
-
     private String text(Object value) {
         if (value == null) {
             return null;
@@ -1117,8 +1098,9 @@ public class AdminFeatureController {
                 """, AuthContext.currentAdminId(), action, targetType, targetId);
     }
 
-    public record StatusUpdateRequest(@NotBlank String status, Long officerRoleId, Long existingUserId, boolean confirmedNoMatch) {
-        public StatusUpdateRequest(String status) { this(status, null, null, false); }
+    public record StatusUpdateRequest(@NotBlank String status, Long officerRoleId, Long existingUserId, boolean confirmedNoMatch, Long officerTermId) {
+        public StatusUpdateRequest(String status) { this(status, null, null, false, null); }
+        public StatusUpdateRequest(String status, Long roleId, Long userId, boolean confirmed) { this(status, roleId, userId, confirmed, null); }
     }
 
     public record ManagerCreateRequest(

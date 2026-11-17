@@ -23,7 +23,7 @@ class AccessPermissionCacheTest {
         var database = mock(AccessQualificationService.class);
         when(database.levelAt(eq(1L), any(LocalDate.class))).thenReturn(AccessLevel.FULL);
         var cache = new AccessPermissionCache(redis, database,
-                new OfficerTermPolicyProperties(5, 1, 2, 7, ZoneId.of("Asia/Seoul")));
+                new OfficerTermPolicyProperties(7, ZoneId.of("Asia/Seoul")));
 
         assertThat(cache.currentLevel(1)).isEqualTo(AccessLevel.FULL);
         verifyNoInteractions(database);
@@ -40,7 +40,7 @@ class AccessPermissionCacheTest {
         when(database.levelAt(eq(1L), any(LocalDate.class))).thenReturn(AccessLevel.NONE, AccessLevel.LIMITED)
                 .thenThrow(new IllegalStateException("database unavailable"));
         var cache = new AccessPermissionCache(redis, database,
-                new OfficerTermPolicyProperties(5, 1, 2, 7, ZoneId.of("Asia/Seoul")));
+                new OfficerTermPolicyProperties(7, ZoneId.of("Asia/Seoul")));
 
         assertThat(cache.currentLevel(1)).isEqualTo(AccessLevel.NONE);
         verify(values).set(contains(":1"), eq("NONE"), any(java.time.Duration.class));
@@ -57,7 +57,7 @@ class AccessPermissionCacheTest {
         when(redis.opsForValue()).thenReturn(values);
         when(values.increment("auth:access:user-generation:1")).thenThrow(new IllegalStateException()).thenReturn  (1L);
         var cache = new AccessPermissionCache(redis, mock(AccessQualificationService.class),
-                new OfficerTermPolicyProperties(5, 1, 2, 7, ZoneId.of("Asia/Seoul")));
+                new OfficerTermPolicyProperties(7, ZoneId.of("Asia/Seoul")));
         cache.invalidate(1L);
         verify(values, times(2)).increment("auth:access:user-generation:1");
     }
@@ -80,7 +80,7 @@ class AccessPermissionCacheTest {
         when(database.levelAt(eq(1L), any(LocalDate.class))).thenReturn(AccessLevel.LIMITED, AccessLevel.FULL);
         when(database.levelAt(eq(2L), any(LocalDate.class))).thenReturn(AccessLevel.FULL);
         var cache = new AccessPermissionCache(redis, database,
-                new OfficerTermPolicyProperties(5, 1, 2, 7, ZoneId.of("Asia/Seoul")));
+                new OfficerTermPolicyProperties(7, ZoneId.of("Asia/Seoul")));
         assertThat(cache.currentLevel(1)).isEqualTo(AccessLevel.LIMITED);
         assertThat(cache.currentLevel(1)).isEqualTo(AccessLevel.LIMITED);
         assertThat(cache.currentLevel(2)).isEqualTo(AccessLevel.FULL);

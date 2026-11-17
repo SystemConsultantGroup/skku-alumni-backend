@@ -1,6 +1,7 @@
 package com.scg.alumni.api.operations;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.scg.alumni.global.security.AuthScope;
 import com.scg.alumni.global.security.AuthenticatedPrincipal;
@@ -39,6 +40,18 @@ class PaymentSourceTest {
         relations.removePayment(1L, payment);
         assertThat(jdbc.queryForObject("select count(*) from payment_records where id = ? and deleted_at is not null and amount = 12345 and paid_at is not null", Integer.class, payment)).isEqualTo(1);
         assertThat(jdbc.queryForObject("select legacy_status from legacy_officer_payment_status_archive where officer_history_id = (select id from officer_histories where user_id = 1 and officer_term_id = 3)", String.class)).isEqualTo("PAID");
+    }
+
+    @Test
+    void registeringPaymentDoesNotCreateOrChangeOfficerHistory() {
+        SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
+                new AuthenticatedPrincipal(1L, AuthScope.ADMIN, "Admin"), null));
+        Long role = jdbc.queryForObject("select officer_role_id from officer_histories where user_id = 1 and officer_term_id = 3", Long.class);
+        assertThatThrownBy(() -> admin.registerPayment(new AdminFeatureController.PaymentRegisterRequest(1L, 3L, "PAID", role + 10000, null)))
+                .isInstanceOf(org.springframework.web.server.ResponseStatusException.class);
+        assertThat(jdbc.queryForObject("select officer_role_id from officer_histories where user_id = 1 and officer_term_id = 3", Long.class)).isEqualTo(role);
+        admin.registerPayment(new AdminFeatureController.PaymentRegisterRequest(1L, 3L, "PAID", null, null));
+        assertThat(jdbc.queryForObject("select officer_role_id from officer_histories where user_id = 1 and officer_term_id = 3", Long.class)).isEqualTo(role);
     }
 
     @Test

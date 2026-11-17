@@ -76,7 +76,10 @@ public class AdminMemberDetailController {
             @Valid @RequestBody MemberProfileRequest request
     ) {
         requireMember(memberId);
-        String status = normalizeStatus(request.status());
+        invalidation.afterCommit(memberId);
+        String status = jdbcTemplate.queryForObject("select status from users where id = ?", String.class, memberId);
+        if (request.status() != null && !status.equals(normalizeStatus(request.status())))
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "회원 상태는 프로필에서 변경할 수 없습니다.");
         try {
             jdbcTemplate.update("""
                     update users

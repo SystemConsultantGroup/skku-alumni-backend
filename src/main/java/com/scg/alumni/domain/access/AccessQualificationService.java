@@ -35,7 +35,7 @@ public class AccessQualificationService {
     AccessLevel levelOn(long userId, LocalDate today) {
         Integer enabled = jdbc.queryForObject("""
                 select count(*) from users where id = ? and deleted_at is null and account_blocked = false
-                  and status in ('ACTIVE', 'PENDING')
+                  and status <> 'WITHDRAWN'
                 """, Integer.class, userId);
         if (enabled == null || enabled == 0) return AccessLevel.NONE;
         List<String> payments = jdbc.query("""
@@ -43,8 +43,7 @@ public class AccessQualificationService {
                 from officer_histories oh join officer_terms ot on ot.id = oh.officer_term_id
                 left join payment_records pr on pr.user_id = oh.user_id and pr.officer_term_id = ot.id and pr.deleted_at is null
                 where oh.user_id = ? and oh.deleted_at is null and ot.started_at <= ? and ot.ended_at >= ?
-                  and (exists (select 1 from users u where u.id = oh.user_id and u.status = 'ACTIVE')
-                       or exists (select 1 from officer_history_approvals a where a.officer_history_id = oh.id))
+                  and exists (select 1 from officer_history_approvals a where a.officer_history_id = oh.id)
                   and oh.started_at <= ? and (oh.ended_at is null or oh.ended_at >= ?
                       or (oh.ended_at = ot.ended_at and ot.ended_at >= ?))
                 order by ot.started_at desc, ot.id desc limit 1

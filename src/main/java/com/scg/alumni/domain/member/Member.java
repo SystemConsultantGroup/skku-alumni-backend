@@ -124,11 +124,11 @@ public class Member extends BaseTimeEntity {
     @OneToMany(mappedBy = "member")
     private List<OfficerHistory> officerHistories = new ArrayList<>();
 
-    /** 현직 승인 이력 중 최신 임기의 직책을 표시한다. ACTIVE 계정은 기존 이력을 인정한다. */
+    /** 현직 승인 이력 중 최신 임기의 직책을 표시한다. */
     public Optional<OfficerHistory> currentOfficerHistory(java.time.LocalDate today) {
         return officerHistories.stream()
                 .filter(history -> history.getDeletedAt() == null)
-                .filter(history -> status == MemberStatus.ACTIVE || history.getApprovalCount() > 0)
+                .filter(history -> history.getApprovalCount() > 0)
                 .filter(history -> history.isCurrent(today))
                 .max(java.util.Comparator.comparing(history -> history.getOfficerTerm().getStartedAt()));
     }

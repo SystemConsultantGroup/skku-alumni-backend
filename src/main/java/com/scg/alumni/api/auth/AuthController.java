@@ -83,9 +83,7 @@ public class AuthController {
         }
         validateSignupCandidate(candidate, request);
 
-        // 이미 활성인 회원은 그대로 둔다. 회비 확인까지 끝난 계정을 아이디를
-        // 만들었다는 이유로 승인 대기로 되돌리면, 사무처가 승인을 두 번 해야 한다.
-        String status = "ACTIVE".equals(candidate.status()) ? "ACTIVE" : "PENDING";
+        String status = candidate.status();
         jdbcTemplate.update("""
                         update users
                         set login_id = ?,
@@ -185,14 +183,6 @@ public class AuthController {
         return issueAuthResponse(principal, request, response);
     }
 
-    private boolean isActiveMember(Long memberId) {
-        Integer count = jdbcTemplate.queryForObject(
-                "select count(*) from users where id = ? and status = 'ACTIVE'",
-                Integer.class,
-                memberId);
-        return count != null && count > 0;
-    }
-
     private AuthResponse issueAuthResponse(
             AuthenticatedPrincipal principal,
             HttpServletRequest request,
@@ -257,6 +247,7 @@ public class AuthController {
                         select u.id, u.name, u.phone, u.email, u.status, u.login_id, u.password
                         from users u
                         where u.name = ?
+                          and u.deleted_at is null
                           and u.admission_year = ?
                           and u.major_id in (%s)
                           and replace(replace(replace(coalesce(u.phone, ''), '-', ''), ' ', ''), '.', '') = ?
@@ -265,7 +256,7 @@ public class AuthController {
                               from officer_histories oh
                               join officer_terms ot on ot.id = oh.officer_term_id
                               where oh.user_id = u.id
-                                and ot.current_term = true
+                                and ot.started_at <= CURRENT_DATE and ot.ended_at >= CURRENT_DATE
                           )
                         order by u.id
                         limit 1
@@ -373,8 +364,9 @@ public class AuthController {
         if ("WITHDRAWN".equals(candidate.status())) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "탈퇴 처리된 계정입니다. 임원 등록을 새로 신청해주세요.");
         }
-        if ("REJECTED".equals(candidate.status())) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "가입 승인이 반려된 계정입니다. 사무처에 문의해주세요.");
+        Integer blocked = jdbcTemplate.queryForObject("select count(*) from users where id = ? and account_blocked = true", Integer.class, candidate.id());
+        if (blocked != null && blocked > 0) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "차단된 계정입니다. 사무처에 문의해주세요.");
         }
         if (hasText(candidate.userId()) && hasText(candidate.password())) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "이미 아이디와 비밀번호가 등록된 계정입니다. 로그인해주세요.");
@@ -488,26 +480,6 @@ public class AuthController {
             }
         }
         return null;
-    }
-
-    /**
-     * 비밀번호가 맞는데도 못 들어가는 경우에는 그 이유를 알려준다.
-     *
-     * <p>승인 대기 중인 사람에게 "아이디 또는 비밀번호를 확인해주세요" 만 돌려주면
-     * 방금 계정을 만든 본인은 비밀번호를 잘못 적은 줄 알고 계속 다시 넣는다.
-     * 비밀번호가 맞았을 때만 알려주므로 계정 존재 여부가 새어 나가지는 않는다.
-     */
-    private void requireLoginableStatus(String status) {
-        if ("ACTIVE".equals(status)) {
-            return;
-        }
-        String message = switch (status == null ? "" : status) {
-            case "PENDING" -> "가입 승인 대기 중입니다. 회비 납부가 확인되면 관리자가 계정을 활성화합니다.";
-            case "REJECTED" -> "가입이 반려된 계정입니다. 총동창회 사무처(02-741-4171)로 문의해주세요.";
-            case "WITHDRAWN" -> "탈퇴 처리된 계정입니다. 다시 이용하시려면 임원 등록을 새로 신청해주세요.";
-            default -> "현재 로그인할 수 없는 계정입니다. 총동창회 사무처(02-741-4171)로 문의해주세요.";
-        };
-        throw new ResponseStatusException(HttpStatus.FORBIDDEN, message);
     }
 
     private ResponseStatusException unauthorized() {
