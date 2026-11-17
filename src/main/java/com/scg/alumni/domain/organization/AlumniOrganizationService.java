@@ -106,6 +106,19 @@ public class AlumniOrganizationService {
         affected.forEach(invalidation::afterCommit);
     }
 
+    /** 기존 위촉을 종료하고 같은 회원의 새 위촉을 원자적으로 생성한다. */
+    @Transactional
+    public long replaceOfficer(long organizationId, long officerId, String title, boolean president, LocalDate endedAt) {
+        lockActiveOrganization(organizationId);
+        List<Long> users = jdbc.queryForList("""
+                select user_id from alumni_organization_officers where id = ? and organization_id = ?
+                  and ended_at_recorded_at is null and (ended_at is null or ended_at >= ?)
+                """, Long.class, officerId, organizationId, LocalDate.now(SEOUL));
+        if (users.isEmpty()) throw error(HttpStatus.NOT_FOUND, "Current appointment not found");
+        expire(organizationId, officerId);
+        return addOfficer(organizationId, users.getFirst(), title, president, LocalDate.now(SEOUL), endedAt);
+    }
+
     @Transactional
     public void dissolve(long organizationId) {
         lockActiveOrganization(organizationId);
