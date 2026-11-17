@@ -52,12 +52,12 @@ public class UnifiedSearchRepository {
                 : "(lower(p.title) like ? or lower(coalesce(p.body, '')) like ? or lower(coalesce(u.name, a.name, '')) like ?)";
         String kinds = notice ? "p.post_kind = 'NOTICE'" : "p.post_kind in ('COMMUNITY', 'CLUB', 'BUSINESS')";
         String sql = """
-                select * from (select p.id, p.post_kind, p.club_id, p.title, p.body,
-                       substring(coalesce(p.body, ''), 1, 200) as summary, p.created_at,
+                select * from (select p.id, p.post_kind as postKind, p.club_id as clubId, c.category as clubCategory, p.title, p.body,
+                       substring(coalesce(p.body, ''), 1, 200) as summary, p.created_at as createdAt,
                        case when lower(p.title) like ? then 3
                             when lower(coalesce(u.name, a.name, '')) like ? then 2 else 1 end as relevance,
-                       case when u.status = 'WITHDRAWN' then '탈퇴한 사용자' else coalesce(u.name, a.name) end as author_name
-                from posts p left join users u on u.id = p.user_id and u.deleted_at is null
+                       case when u.status = 'WITHDRAWN' then '탈퇴한 사용자' else coalesce(u.name, a.name) end as authorName
+                from posts p left join clubs c on c.id = p.club_id and c.deleted_at is null left join users u on u.id = p.user_id and u.deleted_at is null
                 left join admins a on a.id = p.admin_id
                 where p.deleted_at is null and p.status = 'PUBLISHED' and %s
                   and (p.post_kind <> 'CLUB' or (p.club_id is not null and u.id is not null))
