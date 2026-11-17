@@ -131,4 +131,18 @@ public class UnifiedSearchRepository {
         people.forEach(person -> person.put("organizations", organizations.getOrDefault(((Number) person.get("id")).longValue(), List.of())));
         return people;
     }
+    public List<Map<String, Object>> unitAppointments(long userId, long viewer, LocalDate today) {
+        return jdbc.queryForList("""
+                select a.id as organizationId, a.name as organizationName, o.title,
+                       o.effective_started_at as startedAt, o.ended_at as endedAt, o.president
+                from alumni_organization_officers o join alumni_organizations a on a.id = o.organization_id
+                join users u on u.id = o.user_id
+                where o.user_id = ? and u.deleted_at is null and u.status <> 'WITHDRAWN' and u.account_blocked = false
+                  and o.ended_at_recorded_at is null and o.effective_started_at <= ?
+                  and (o.ended_at is null or o.ended_at >= ?) and a.dissolved_at is null
+                  and not exists (select 1 from user_blocks b where b.blocker_id = ? and b.blocked_id = u.id and b.deleted_at is null)
+                order by a.name, o.id desc
+                """, userId, today, today, viewer);
+    }
+
 }

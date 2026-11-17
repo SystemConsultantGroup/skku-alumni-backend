@@ -72,6 +72,10 @@ public class UnifiedSearchService {
                 moreNotices ? ((Number) noticeItems.getLast().get("relevance")).intValue() : null);
     }
 
+    public List<Map<String, Object>> unitAppointments(long userId, long viewer) {
+        return repository.unitAppointments(userId, viewer, LocalDate.now(policy.zone()));
+    }
+
     public record Shortcut(String name, String path, String keywords) { }
     public record Results(List<Shortcut> shortcuts, List<Map<String, Object>> posts, Long nextPostCursor, Integer nextPostRank,
                           List<Map<String, Object>> people, String nextPersonCursor,
