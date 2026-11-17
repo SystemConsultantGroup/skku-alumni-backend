@@ -16,6 +16,43 @@ class UnifiedSearchServiceTest {
     @Autowired UnifiedSearchRepository repository;
     @Autowired JdbcTemplate jdbc;
 
+    @Test void noticeAndPostSummariesShowTheMatchingBodyContext() {
+        String body = "앞".repeat(300) + "가상검색어" + "뒤".repeat(300);
+        jdbc.update("insert into posts (user_id, title, body, status, post_kind) values (1, '가상 공지', ?, 'PUBLISHED', 'NOTICE')", body);
+        jdbc.update("insert into posts (user_id, title, body, status, post_kind) values (1, '가상 게시물', ?, 'PUBLISHED', 'BUSINESS')", body);
+        var results = search.search("가상검색어", 2, null, null, 10);
+        assertThat((String) results.notices().getFirst().get("summary")).startsWith("…").contains("가상검색어");
+        assertThat((String) results.posts().getFirst().get("summary")).startsWith("…").contains("가상검색어");
+        assertThat(results.posts().getFirst().get("body")).isEqualTo(body);
+    }
+
+    @Test
+    void noticesAreSeparateAndPreservePublicationAndBlockRules() {
+        String marker = "가상공지" + java.util.UUID.randomUUID().toString().replace("-", "");
+        jdbc.update("insert into posts (user_id, title, body, status, post_kind) values (1, ?, '본문', 'PUBLISHED', 'NOTICE')", marker + " 제목");
+        jdbc.update("insert into posts (user_id, title, body, status, post_kind) values (1, '다른 제목', ?, 'PUBLISHED', 'NOTICE')", marker + " 본문");
+        jdbc.update("insert into posts (user_id, title, body, status, post_kind) values (1, ?, '본문', 'HIDDEN', 'NOTICE')", marker + " 숨김");
+        jdbc.update("insert into posts (user_id, title, body, status, post_kind) values (1, ?, '본문', 'PUBLISHED', 'NEWS')", marker + " 뉴스");
+        jdbc.update("insert into posts (user_id, title, body, status, post_kind, deleted_at) values (1, ?, '본문', 'PUBLISHED', 'NOTICE', CURRENT_TIMESTAMP)", marker + " 삭제");
+        var first = search.search(marker, 2, null, null, null, null, null, 1);
+        assertThat(first.notices()).extracting(row -> row.get("title")).containsExactly(marker + " 제목");
+        assertThat(first.posts()).isEmpty();
+        var second = search.search(marker, 2, null, null, null, first.nextNoticeCursor(), first.nextNoticeRank(), 1);
+        assertThat(second.notices()).extracting(row -> row.get("title")).containsExactly("다른 제목");
+        assertThat(second.nextNoticeCursor()).isNull();
+        jdbc.update("insert into user_blocks (blocker_id, blocked_id) values (2, 1)");
+        assertThat(search.search(marker, 2, null, null, 10).notices()).isEmpty();
+    }
+
+    @Test
+    void noticeAuthorSearchAndOneCharacterFallbackWork() {
+        String marker = "가상작성자" + java.util.UUID.randomUUID().toString().replace("-", "");
+        jdbc.update("update users set name = ? where id = 1", marker);
+        jdbc.update("insert into posts (user_id, title, body, status, post_kind) values (1, '단일 제목', '단일 본문', 'PUBLISHED', 'NOTICE')");
+        assertThat(repository.notices(marker, 2, null, null, 20)).extracting(row -> row.get("title")).contains("단일 제목");
+        assertThat(repository.notices("단", 2, null, null, 20)).extracting(row -> row.get("title")).contains("단일 제목");
+    }
+
     @Test
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     void searchesPostsByBodyAndHonorsPublishedStatus() {
@@ -35,6 +72,7 @@ class UnifiedSearchServiceTest {
     void pendingHistoryNeedsApprovalForOfficerSearchClassification() {
         LocalDate today = LocalDate.now();
         jdbc.update("update users set name = 'Pending Search Test', status = 'PENDING' where id = 2");
+        jdbc.update("delete from officer_history_approvals where officer_history_id in (select id from officer_histories where user_id = 2)");
         jdbc.update("insert into officer_terms (generation, phase, started_at, ended_at, current_term) values (998, 1, ?, ?, false)", today.minusDays(1), today.plusDays(1));
         long term = jdbc.queryForObject("select id from officer_terms where generation = 998", Long.class);
         jdbc.update("insert into officer_histories (user_id, officer_term_id, officer_role_id, started_at) values (2, ?, 1, ?)", term, today);

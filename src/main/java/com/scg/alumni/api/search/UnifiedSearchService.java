@@ -28,6 +28,11 @@ public class UnifiedSearchService {
     }
 
     public Results search(String keyword, long viewer, Long postCursor, Integer postRank, String personCursor, int requestedSize) {
+        return search(keyword, viewer, postCursor, postRank, personCursor, null, null, requestedSize);
+    }
+
+    public Results search(String keyword, long viewer, Long postCursor, Integer postRank, String personCursor,
+                          Long noticeCursor, Integer noticeRank, int requestedSize) {
         if (keyword == null || keyword.isBlank() || keyword.length() > 100)
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "검색어를 확인하세요.");
         String query = keyword.trim().toLowerCase(Locale.ROOT);
@@ -46,19 +51,29 @@ public class UnifiedSearchService {
         }
         if (postRank != null && (postCursor == null || postRank < 1 || postRank > 3))
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "게시물 커서가 올바르지 않습니다.");
+        if (noticeRank != null && (noticeCursor == null || noticeRank < 1 || noticeRank > 3))
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "공지사항 커서가 올바르지 않습니다.");
         var posts = repository.posts(query, viewer, postCursor, postRank, size + 1);
+        var notices = repository.notices(query, viewer, noticeCursor, noticeRank, size + 1);
         var people = repository.people(query, viewer, LocalDate.now(policy.zone()), group, id, size + 1);
         boolean morePosts = posts.size() > size, morePeople = people.size() > size;
         var postItems = posts.subList(0, Math.min(size, posts.size()));
         var personItems = people.subList(0, Math.min(size, people.size()));
+        boolean moreNotices = notices.size() > size;
+        var noticeItems = notices.subList(0, Math.min(size, notices.size()));
+        postItems.forEach(item -> item.put("summary", SearchSnippet.from((String) item.get("body"), query)));
+        noticeItems.forEach(item -> item.put("summary", SearchSnippet.from((String) item.get("body"), query)));
         Long nextPost = morePosts ? ((Number) postItems.getLast().get("id")).longValue() : null;
         Integer nextPostRank = morePosts ? ((Number) postItems.getLast().get("relevance")).intValue() : null;
         String nextPerson = morePeople ? personItems.getLast().get("officer") + ":" + personItems.getLast().get("id") : null;
         return new Results(SHORTCUTS.stream().filter(item -> item.keywords().contains(query)).toList(),
-                postItems, nextPost, nextPostRank, personItems, nextPerson);
+                postItems, nextPost, nextPostRank, personItems, nextPerson, noticeItems,
+                moreNotices ? ((Number) noticeItems.getLast().get("id")).longValue() : null,
+                moreNotices ? ((Number) noticeItems.getLast().get("relevance")).intValue() : null);
     }
 
     public record Shortcut(String name, String path, String keywords) { }
     public record Results(List<Shortcut> shortcuts, List<Map<String, Object>> posts, Long nextPostCursor, Integer nextPostRank,
-                          List<Map<String, Object>> people, String nextPersonCursor) { }
+                          List<Map<String, Object>> people, String nextPersonCursor,
+                          List<Map<String, Object>> notices, Long nextNoticeCursor, Integer nextNoticeRank) { }
 }

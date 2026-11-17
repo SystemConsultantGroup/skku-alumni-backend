@@ -6,11 +6,14 @@ import java.util.Map;
 import java.util.ArrayList;
 import java.util.HashMap;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Repository;
 
 @Repository
+@Slf4j
 @RequiredArgsConstructor
 public class UnifiedSearchRepository {
     private final JdbcTemplate jdbc;
@@ -21,6 +24,20 @@ public class UnifiedSearchRepository {
     }
 
     public List<Map<String, Object>> posts(String keyword, long viewer, Long cursor, Integer cursorRank, int limit) {
+        return searchPosts(keyword, viewer, cursor, cursorRank, limit, false);
+    }
+
+    public List<Map<String, Object>> notices(String keyword, long viewer, Long cursor, Integer cursorRank, int limit) {
+        return searchPosts(keyword, viewer, cursor, cursorRank, limit, true);
+    }
+
+    private List<Map<String, Object>> searchPosts(String keyword, long viewer, Long cursor, Integer cursorRank, int limit, boolean notice) {
+        boolean ngram = environment.getProperty("search.mysql-ngram-enabled", Boolean.class, false)
+                && keyword.codePointCount(0, keyword.length()) >= 2;
+        return searchPosts(keyword, viewer, cursor, cursorRank, limit, notice, ngram);
+    }
+
+    private List<Map<String, Object>> searchPosts(String keyword, long viewer, Long cursor, Integer cursorRank, int limit, boolean notice, boolean ngram) {
         String pattern = "%" + keyword.toLowerCase(java.util.Locale.ROOT) + "%";
         if (cursor != null && cursorRank == null) {
             cursorRank = jdbc.query("""
@@ -30,11 +47,10 @@ public class UnifiedSearchRepository {
                     left join admins a on a.id = p.admin_id where p.id = ?
                     """, (rs, row) -> rs.getInt(1), pattern, pattern, cursor).stream().findFirst().orElse(1);
         }
-        boolean ngram = environment.getProperty("search.mysql-ngram-enabled", Boolean.class, false)
-                && keyword.codePointCount(0, keyword.length()) >= 2;
         String predicate = ngram
-                ? "(match(p.title, p.body) against (? in natural language mode) or lower(coalesce(u.name, a.name, '')) like ?)"
+                ? "(match(p.title, p.body) against (? in natural language mode) or lower(p.title) like ? or lower(coalesce(p.body, '')) like ? or lower(coalesce(u.name, a.name, '')) like ?)"
                 : "(lower(p.title) like ? or lower(coalesce(p.body, '')) like ? or lower(coalesce(u.name, a.name, '')) like ?)";
+        String kinds = notice ? "p.post_kind = 'NOTICE'" : "p.post_kind in ('COMMUNITY', 'CLUB', 'BUSINESS')";
         String sql = """
                 select * from (select p.id, p.post_kind, p.club_id, p.title, p.body,
                        substring(coalesce(p.body, ''), 1, 200) as summary, p.created_at,
@@ -43,18 +59,33 @@ public class UnifiedSearchRepository {
                        case when u.status = 'WITHDRAWN' then '탈퇴한 사용자' else coalesce(u.name, a.name) end as author_name
                 from posts p left join users u on u.id = p.user_id and u.deleted_at is null
                 left join admins a on a.id = p.admin_id
-                where p.deleted_at is null and p.status = 'PUBLISHED' and p.post_kind in ('COMMUNITY', 'CLUB', 'BUSINESS')
+                where p.deleted_at is null and p.status = 'PUBLISHED' and %s
                   and (p.post_kind <> 'CLUB' or (p.club_id is not null and u.id is not null))
                   and not exists (select 1 from user_blocks b where b.blocker_id = ? and b.blocked_id = p.user_id and b.deleted_at is null)
                   and %s
                 ) results where (? is null or (? is null and id < ?) or relevance < ? or (relevance = ? and id < ?))
                 order by relevance desc, id desc limit ?
-                """.formatted(predicate);
+                """.formatted(kinds, predicate);
         List<Object> args = new ArrayList<>(java.util.Arrays.asList(pattern, pattern, viewer));
-        if (ngram) { args.add(keyword); args.add(pattern); }
-        else { args.add(pattern); args.add(pattern); args.add(pattern); }
+        if (ngram) args.add(keyword);
+        args.add(pattern); args.add(pattern); args.add(pattern);
         args.addAll(java.util.Arrays.asList(cursor, cursorRank, cursor, cursorRank, cursorRank, cursor, limit));
-        return jdbc.queryForList(sql, args.toArray());
+        try {
+            return jdbc.queryForList(sql, args.toArray());
+        } catch (DataAccessException failure) {
+            if (ngram && missingFulltextIndex(failure)) {
+                log.warn("Fulltext index for posts(title, body) is missing; falling back to LIKE search");
+                return searchPosts(keyword, viewer, cursor, cursorRank, limit, notice, false);
+            }
+            throw failure;
+        }
+    }
+
+    private boolean missingFulltextIndex(Throwable failure) {
+        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+            if (cause instanceof java.sql.SQLException sql && sql.getErrorCode() == 1191) return true;
+        }
+        return false;
     }
 
     public List<Map<String, Object>> people(String keyword, long viewer, LocalDate today, Integer cursorGroup, Long cursorId, int limit) {
@@ -63,15 +94,15 @@ public class UnifiedSearchRepository {
                 select * from (select u.id, u.name,
                     case when exists (select 1 from officer_histories h join officer_terms t on t.id = h.officer_term_id
                         where h.user_id = u.id and h.deleted_at is null and h.started_at <= ?
-                          and (u.status = 'ACTIVE' or exists (select 1 from officer_history_approvals approval where approval.officer_history_id = h.id))
+                          and exists (select 1 from officer_history_approvals approval where approval.officer_history_id = h.id)
                           and (h.ended_at is null or h.ended_at >= ?) and t.started_at <= ? and t.ended_at >= ?)
                     then 1 else 0 end as officer
-                from users u where u.deleted_at is null and u.status in ('ACTIVE', 'PENDING')
+                from users u where u.deleted_at is null and u.status <> 'WITHDRAWN' and u.account_blocked = false
                   and lower(u.name) like ?
                   and not exists (select 1 from user_blocks b where b.blocker_id = ? and b.blocked_id = u.id and b.deleted_at is null)
                   and (exists (select 1 from officer_histories h join officer_terms t on t.id = h.officer_term_id
                         where h.user_id = u.id and h.deleted_at is null and h.started_at <= ?
-                          and (u.status = 'ACTIVE' or exists (select 1 from officer_history_approvals approval where approval.officer_history_id = h.id))
+                          and exists (select 1 from officer_history_approvals approval where approval.officer_history_id = h.id)
                           and (h.ended_at is null or h.ended_at >= ?) and t.started_at <= ? and t.ended_at >= ?)
                        or exists (select 1 from alumni_organization_officers o join alumni_organizations a on a.id = o.organization_id
                         where o.user_id = u.id and o.ended_at_recorded_at is null and o.effective_started_at <= ?
