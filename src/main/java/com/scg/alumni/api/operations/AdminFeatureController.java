@@ -1098,7 +1098,10 @@ public class AdminFeatureController {
                 """, AuthContext.currentAdminId(), action, targetType, targetId);
     }
 
-    public record StatusUpdateRequest(@NotBlank String status, Long officerRoleId, Long existingUserId, boolean confirmedNoMatch, Long officerTermId) {
+    public record StatusUpdateRequest(@NotBlank String status, Long officerRoleId, Long existingUserId, Boolean confirmedNoMatch, Long officerTermId) {
+        public StatusUpdateRequest {
+            if (confirmedNoMatch == null) confirmedNoMatch = false;
+        }
         public StatusUpdateRequest(String status) { this(status, null, null, false, null); }
         public StatusUpdateRequest(String status, Long roleId, Long userId, boolean confirmed) { this(status, roleId, userId, confirmed, null); }
     }

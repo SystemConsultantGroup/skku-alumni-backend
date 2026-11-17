@@ -53,7 +53,12 @@ public class MemberPermissionFilter extends OncePerRequestFilter {
             }
         }
         if (!level.permissions().contains(required)) {
-            response.sendError(HttpServletResponse.SC_FORBIDDEN);
+            if (level == AccessLevel.LIMITED) {
+                // Avoid an ERROR dispatch that can turn this response into 401.
+                response.setStatus(HttpServletResponse.SC_FORBIDDEN);
+            } else {
+                response.sendError(HttpServletResponse.SC_FORBIDDEN);
+            }
             return;
         }
         chain.doFilter(request, response);
