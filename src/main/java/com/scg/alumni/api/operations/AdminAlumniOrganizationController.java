@@ -77,6 +77,17 @@ public class AdminAlumniOrganizationController {
         return Map.of("id", officerId);
     }
 
+    @PostMapping("/{id}/officers/{officerId}/replace")
+    @Transactional
+    public Map<String, Object> replaceOfficer(@PathVariable long id, @PathVariable long officerId,
+            @Valid @RequestBody ReplaceOfficerRequest request) {
+        long replacementId = organizations.replaceOfficer(id, officerId, request.title(), request.president(), request.endedAt());
+        audit.record("REPLACE_ALUMNI_OFFICER", "alumni_organization_officer", officerId);
+        return Map.of("id", replacementId, "previousId", officerId);
+    }
+
+    public record ReplaceOfficerRequest(@NotBlank @Size(max = 255) String title, boolean president, LocalDate endedAt) { }
+
     @PostMapping("/{id}/dissolve")
     @Transactional
     public Map<String, Object> dissolve(@PathVariable long id) {
