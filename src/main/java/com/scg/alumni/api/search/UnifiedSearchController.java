@@ -3,6 +3,7 @@ package com.scg.alumni.api.search;
 import com.scg.alumni.global.security.AuthContext;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -23,4 +24,9 @@ public class UnifiedSearchController {
             @RequestParam(defaultValue = "10") int size) {
         return service.search(keyword, AuthContext.currentMemberId(), postCursor, postRank, personCursor, noticeCursor, noticeRank, size);
     }
+    @GetMapping("/people/{userId}/unit-appointments")
+    public java.util.List<java.util.Map<String, Object>> unitAppointments(@PathVariable long userId) {
+        return service.unitAppointments(userId, AuthContext.currentMemberId());
+    }
+
 }
