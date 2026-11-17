@@ -74,7 +74,7 @@ public class ReferenceDataController {
                 order by region
                 """, String.class));
         response.put("officerTerms", jdbcTemplate.query("""
-                select id, generation, phase, started_at, ended_at, current_term
+                select id, generation, phase, started_at, ended_at, (started_at <= CURRENT_DATE and ended_at >= CURRENT_DATE) as current_term
                 from officer_terms
                 order by generation desc, phase desc
                 """, JdbcResponseMapper.INSTANCE));
