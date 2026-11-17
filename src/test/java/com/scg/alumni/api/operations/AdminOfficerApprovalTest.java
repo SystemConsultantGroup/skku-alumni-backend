@@ -70,9 +70,9 @@ class AdminOfficerApprovalTest {
     }
 
     @Test
-    void paymentMemberSearchIncludesActiveAndPendingAccounts() {
+    void paymentMemberSearchExcludesUnapprovedPendingAccounts() {
         var page = controller.findMembers(null, null, "ELIGIBLE", null, false, false, 1, 50);
-        assertThat(page.items()).extracting(row -> ((Number) row.get("id")).longValue()).contains(1L, 5L);
+        assertThat(page.items()).extracting(row -> ((Number) row.get("id")).longValue()).contains(1L).doesNotContain(5L);
     }
 
     @Test
