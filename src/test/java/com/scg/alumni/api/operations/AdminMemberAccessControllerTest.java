@@ -20,7 +20,7 @@ class AdminMemberAccessControllerTest {
         var jdbc = mock(JdbcTemplate.class);
         when(jdbc.queryForList("select account_blocked from users where id = ?", 7L))
                 .thenReturn(List.of(Map.of("account_blocked", 1)));
-        when(qualifications.currentLevel(7L)).thenReturn(AccessLevel.NONE);
+        when(qualifications.currentDetails(7L)).thenReturn(new AccessQualificationService.QualificationDetails(AccessLevel.NONE, false, null, List.of(), false, 7, "ACCOUNT_UNAVAILABLE"));
         var result = new AdminMemberAccessController(qualifications, jdbc).access(7L);
         assertEquals(AccessLevel.NONE, result.level());
         assertEquals(true, result.blocked());
