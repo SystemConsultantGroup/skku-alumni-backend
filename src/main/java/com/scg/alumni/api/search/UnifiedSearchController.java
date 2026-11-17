@@ -18,7 +18,9 @@ public class UnifiedSearchController {
             @RequestParam(required = false) Long postCursor,
             @RequestParam(required = false) Integer postRank,
             @RequestParam(required = false) String personCursor,
+            @RequestParam(required = false) Long noticeCursor,
+            @RequestParam(required = false) Integer noticeRank,
             @RequestParam(defaultValue = "10") int size) {
-        return service.search(keyword, AuthContext.currentMemberId(), postCursor, postRank, personCursor, size);
+        return service.search(keyword, AuthContext.currentMemberId(), postCursor, postRank, personCursor, noticeCursor, noticeRank, size);
     }
 }
