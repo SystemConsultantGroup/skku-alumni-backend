@@ -7,6 +7,8 @@ import com.scg.alumni.domain.access.AccessPermissionCache;
 import jakarta.servlet.Filter;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
+import static org.mockito.Mockito.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -15,6 +17,9 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.context.WebApplicationContext;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 @SpringBootTest
 @Transactional
@@ -24,6 +29,23 @@ class MemberPermissionIntegrationTest {
     @Autowired JwtTokenService tokens;
     @Autowired JdbcTemplate jdbc;
     @Autowired AccessPermissionCache cache;
+    @MockitoBean StringRedisTemplate redis;
+
+    @BeforeEach void configureRedis() {
+        @SuppressWarnings("unchecked")
+        ValueOperations<String, String> values = mock(ValueOperations.class);
+        java.util.Map<String, String> entries = new java.util.HashMap<>();
+        when(redis.opsForValue()).thenReturn(values);
+        when(values.get(anyString())).thenAnswer(call -> entries.get(call.getArgument(0)));
+        doAnswer(call -> { entries.put(call.getArgument(0), call.getArgument(1)); return null; })
+                .when(values).set(anyString(), anyString(), any(java.time.Duration.class));
+        when(values.increment(anyString())).thenAnswer(call -> {
+            String key = call.getArgument(0);
+            long next = Long.parseLong(entries.getOrDefault(key, "0")) + 1;
+            entries.put(key, Long.toString(next));
+            return next;
+        });
+    }
 
     @AfterEach void clearCachedPermission() { cache.invalidate(1L); }
 
