@@ -2,9 +2,10 @@ package com.scg.alumni;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.scheduling.annotation.EnableScheduling;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import com.scg.alumni.domain.officer.OfficerTermPolicyProperties;
 
-@EnableScheduling
+@EnableConfigurationProperties(OfficerTermPolicyProperties.class)
 @SpringBootApplication
 public class AlumniApplication {
 
