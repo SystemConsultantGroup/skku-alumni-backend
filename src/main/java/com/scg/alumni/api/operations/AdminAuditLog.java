@@ -18,9 +18,17 @@ public class AdminAuditLog {
     private final JdbcTemplate jdbcTemplate;
 
     public void record(String action, String targetType, Long targetId) {
-        jdbcTemplate.update("""
-                insert into admin_audit_logs (admin_id, action, target_type, target_id, created_at)
-                values (?, ?, ?, ?, CURRENT_TIMESTAMP)
-                """, AuthContext.currentAdminId(), action, targetType, targetId);
+        recordAndGetId(action, targetType, targetId);
+    }
+
+    public long recordAndGetId(String action, String targetType, Long targetId) {
+        var values = new java.util.HashMap<String, Object>();
+        values.put("admin_id", AuthContext.currentAdminId());
+        values.put("action", action);
+        values.put("target_type", targetType);
+        values.put("target_id", targetId);
+        return new org.springframework.jdbc.core.simple.SimpleJdbcInsert(jdbcTemplate)
+                .withTableName("admin_audit_logs").usingColumns("admin_id", "action", "target_type", "target_id")
+                .usingGeneratedKeyColumns("id").executeAndReturnKey(values).longValue();
     }
 }

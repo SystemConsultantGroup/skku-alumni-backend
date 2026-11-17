@@ -33,6 +33,7 @@ public class AlumniRosterSyncService {
     public Preview preview(long organizationId, byte[] file) {
         requireActive(organizationId);
         List<AlumniRosterWorkbook.Entry> entries = AlumniRosterWorkbook.parse(file);
+        if (entries.isEmpty()) throw conflict("빈 명단은 업로드할 수 없습니다. 전체 퇴임은 단위동문회 해제 기능을 이용하세요.");
         List<Current> current = current(organizationId);
         String rosterHash = rosterHash(current);
         String fileHash = hash(file);
@@ -124,6 +125,7 @@ public class AlumniRosterSyncService {
                             ended_at = coalesce(?, ended_at), scheduled_ended_at = coalesce(?, scheduled_ended_at),
                             updated_at = CURRENT_TIMESTAMP where id = ?
                         """, entry.startedAt(), entry.startedAt(), entry.endedAt(), entry.endedAt(), existing.id());
+                organizations.touchRoster(organizationId);
                 if (existing.president()) invalidation.afterCommit(existing.userId());
             }
         }

@@ -121,18 +121,14 @@ class AlumniRosterSyncServiceTest {
     }
 
     @Test
-    void emptyRosterRequiresConfirmationAndEndsAllOfficers() throws Exception {
+    void emptyRosterCannotEndAllOfficers() throws Exception {
         long org = organizations.create("Fictional empty club", null);
         organizations.addOfficer(org, 1, "Chair", true, null, null);
         organizations.addOfficer(org, 2, "Secretary", false, null, null);
         byte[] file = workbook(new String[0][]);
-        var preview = sync.preview(org, file);
-        assertThat(preview.ending()).hasSize(2);
-        assertThatThrownBy(() -> sync.apply(org, file, preview.token(), false)).isInstanceOf(ResponseStatusException.class);
-        assertThat(sync.apply(org, file, preview.token(), true).ended()).isEqualTo(2);
-        assertThat(organizations.officers(org, null, 20, true)).isEmpty();
-        assertThat(organizations.officers(org, null, 20, false)).hasSize(2);
-        assertThat(sync.preview(org, file).alreadyApplied()).isTrue();
+        assertThatThrownBy(() -> sync.preview(org, file)).isInstanceOf(ResponseStatusException.class).hasMessageContaining("빈 명단");
+        assertThatThrownBy(() -> sync.apply(org, file, "invalid", true)).isInstanceOf(ResponseStatusException.class).hasMessageContaining("빈 명단");
+        assertThat(organizations.officers(org, null, 20, true)).hasSize(2);
     }
 
     @Test

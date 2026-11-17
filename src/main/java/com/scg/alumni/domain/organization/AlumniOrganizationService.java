@@ -23,6 +23,7 @@ public class AlumniOrganizationService {
 
     @Transactional
     public long create(String name, String description) {
+        lockOrganizationNames();
         KeyHolder key = new GeneratedKeyHolder();
         jdbc.update(connection -> {
             PreparedStatement statement = connection.prepareStatement(
@@ -36,8 +37,9 @@ public class AlumniOrganizationService {
 
     @Transactional
     public void update(long organizationId, String name, String description) {
+        lockOrganizationNames();
         lockActiveOrganization(organizationId);
-        jdbc.update("update alumni_organizations set name = ?, description = ?, updated_at = CURRENT_TIMESTAMP where id = ?",
+        jdbc.update("update alumni_organizations set name = ?, description = ?, roster_revision = roster_revision + 1, updated_at = CURRENT_TIMESTAMP where id = ?",
                 name.trim(), description, organizationId);
     }
 
@@ -81,6 +83,7 @@ public class AlumniOrganizationService {
             statement.setObject(8, end);
             return statement;
         }, key);
+        touchRoster(organizationId);
         if (president && (end == null || !end.isBefore(today))) invalidation.afterCommit(userId);
         return key.getKey().longValue();
     }
@@ -99,6 +102,7 @@ public class AlumniOrganizationService {
                 and (ended_at is null or ended_at >= ?)
                 """, today, officerId, organizationId, today);
         if (changed == 0) throw error(HttpStatus.NOT_FOUND, "Current appointment not found");
+        touchRoster(organizationId);
         affected.forEach(invalidation::afterCommit);
     }
 
@@ -115,7 +119,7 @@ public class AlumniOrganizationService {
                 updated_at = CURRENT_TIMESTAMP where organization_id = ? and ended_at_recorded_at is null
                 and (ended_at is null or ended_at >= ?)
                 """, today, organizationId, today);
-        jdbc.update("update alumni_organizations set dissolved_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP where id = ?", organizationId);
+        jdbc.update("update alumni_organizations set dissolved_at = CURRENT_TIMESTAMP, roster_revision = roster_revision + 1, updated_at = CURRENT_TIMESTAMP where id = ?", organizationId);
         affected.forEach(invalidation::afterCommit);
     }
 
@@ -148,6 +152,15 @@ public class AlumniOrganizationService {
         List<Long> rows = jdbc.query("select id from alumni_organizations where id = ? and dissolved_at is null for update",
                 (rs, row) -> rs.getLong(1), id);
         if (rows.isEmpty()) throw error(HttpStatus.NOT_FOUND, "Active organization not found");
+    }
+
+    @Transactional
+    public void touchRoster(long id) {
+        jdbc.update("update alumni_organizations set roster_revision = roster_revision + 1, updated_at = CURRENT_TIMESTAMP where id = ?", id);
+    }
+
+    private void lockOrganizationNames() {
+        jdbc.queryForObject("select id from administrative_person_lock where id = 1 for update", Integer.class);
     }
 
     private static ResponseStatusException error(HttpStatus status, String message) {
