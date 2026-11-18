@@ -1,6 +1,9 @@
 package com.scg.alumni.global.security;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.scg.alumni.domain.access.AccessPermissionCache;
@@ -48,6 +51,29 @@ class MemberPermissionIntegrationTest {
     }
 
     @AfterEach void clearCachedPermission() { cache.invalidate(1L); }
+
+    @Test
+    void limitedMemberCanEditOwnProfileButCannotWriteSharedData() throws Exception {
+        jdbc.update("update payment_records set status = 'UNPAID' where user_id = 1 and officer_term_id = 3");
+        cache.invalidate(1L);
+        String token = "Bearer " + tokens.issue(new AuthenticatedPrincipal(1L, AuthScope.MEMBER, "Member")).token();
+        MockMvc mvc = MockMvcBuilders.webAppContextSetup(context).addFilters(security).build();
+
+        mvc.perform(get("/api/v1/me").header("Authorization", token)).andExpect(status().isOk());
+        mvc.perform(patch("/api/v1/me").header("Authorization", token)
+                .contentType("application/json").content("""
+                        {"email":"fictional-profile@example.invalid","hobbyIds":[],"webLinks":[],
+                         "birthDatePublic":false,"phonePublic":false,"emailPublic":false,"homeAddressPublic":false}
+                        """)).andExpect(result -> {
+            assertThat(result.getResponse().getStatus())
+                    .withFailMessage("Profile update failed: %s", result.getResolvedException())
+                    .isEqualTo(200);
+        });
+        assertThat(jdbc.queryForObject("select email from users where id = 1", String.class))
+                .isEqualTo("fictional-profile@example.invalid");
+        mvc.perform(post("/api/v1/hobbies").header("Authorization", token)).andExpect(status().isForbidden());
+        mvc.perform(get("/api/v1/members").header("Authorization", token)).andExpect(status().isForbidden());
+    }
 
     @Test
     void currentPermissionIsAppliedToExistingJwtOnEveryRequest() throws Exception {
