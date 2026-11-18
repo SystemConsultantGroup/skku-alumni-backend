@@ -98,7 +98,12 @@ public class UnifiedSearchRepository {
                           and (h.ended_at is null or h.ended_at >= ?) and t.started_at <= ? and t.ended_at >= ?)
                     then 1 else 0 end as officer
                 from users u where u.deleted_at is null and u.status <> 'WITHDRAWN' and u.account_blocked = false
-                  and lower(u.name) like ?
+                  and (lower(u.name) like ? or exists (
+                      select 1 from alumni_organization_officers matching
+                      join alumni_organizations org on org.id = matching.organization_id
+                      where matching.user_id = u.id and matching.ended_at_recorded_at is null
+                        and matching.effective_started_at <= ? and (matching.ended_at is null or matching.ended_at >= ?)
+                        and org.dissolved_at is null and (lower(org.name) like ? or lower(coalesce(matching.title, '')) like ?)))
                   and not exists (select 1 from user_blocks b where b.blocker_id = ? and b.blocked_id = u.id and b.deleted_at is null)
                   and (exists (select 1 from officer_histories h join officer_terms t on t.id = h.officer_term_id
                         where h.user_id = u.id and h.deleted_at is null and h.started_at <= ?
@@ -109,7 +114,7 @@ public class UnifiedSearchRepository {
                           and (o.ended_at is null or o.ended_at >= ?) and a.dissolved_at is null))
                 ) result where (? is null or officer < ? or (officer = ? and id < ?))
                 order by officer desc, id desc limit ?
-                """, today, today, today, today, pattern, viewer,
+                """, today, today, today, today, pattern, today, today, pattern, pattern, viewer,
                 today, today, today, today, today, today, cursorGroup, cursorGroup, cursorGroup, cursorId, limit);
         if (people.isEmpty()) return people;
         String placeholders = String.join(",", java.util.Collections.nCopies(people.size(), "?"));

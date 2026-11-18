@@ -87,6 +87,10 @@ class UnifiedSearchServiceTest {
         jdbc.update("insert into alumni_organizations (name) values ('Fictional search club')");
         long organization = jdbc.queryForObject("select max(id) from alumni_organizations", Long.class);
         jdbc.update("insert into alumni_organization_officers (organization_id, user_id, title, president, effective_started_at) values (?, 2, 'Member', false, ?)", organization, LocalDate.now().minusDays(1));
+        assertThat(repository.people("fictional search club", 1, LocalDate.now(), null, null, 20))
+                .extracting(row -> ((Number) row.get("id")).longValue()).contains(2L);
+        assertThat(repository.people("member", 1, LocalDate.now(), null, null, 20))
+                .extracting(row -> ((Number) row.get("id")).longValue()).contains(2L);
         String name = jdbc.queryForObject("select name from users where id = 2", String.class);
         var matches = repository.people(name, 1, LocalDate.now(), null, null, 20);
         assertThat(matches).extracting(row -> ((Number) row.get("id")).longValue()).contains(2L);
