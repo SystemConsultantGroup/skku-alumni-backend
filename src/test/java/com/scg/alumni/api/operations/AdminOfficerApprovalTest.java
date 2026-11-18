@@ -67,6 +67,13 @@ class AdminOfficerApprovalTest {
         long paymentId = jdbc.queryForObject("select id from payment_records where user_id = ?", Long.class, userId);
         controller.updatePaymentStatus(paymentId, new AdminFeatureController.StatusUpdateRequest("PAID"));
         assertThat(access.currentLevel(userId)).isEqualTo(AccessLevel.FULL);
+
+        var memberList = controller.findMembers("Fictional Applicant", "PAID", null, null, false, false, 1, 20);
+        assertThat(memberList.items()).singleElement().satisfies(row -> {
+            assertThat(row.get("status")).isEqualTo("PENDING");
+            assertThat(row.get("officerApproved")).isEqualTo(true);
+            assertThat(row.get("paymentStatus")).isEqualTo("PAID");
+        });
     }
 
     @Test
