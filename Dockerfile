@@ -1,3 +1,4 @@
+# 2026-11-18 CVE-2026-114938 대응: 패치된 Corretto 베이스로 다시 빌드
 FROM amazoncorretto:25-alpine AS builder
 
 WORKDIR /src
