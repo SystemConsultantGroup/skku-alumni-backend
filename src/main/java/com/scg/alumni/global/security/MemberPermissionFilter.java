@@ -72,6 +72,11 @@ public class MemberPermissionFilter extends OncePerRequestFilter {
             }
             if (path.equals("/api/v1/notices") || path.matches("/api/v1/notices/[^/]+")) return Permission.READ_NOTICE;
         }
+        if (("PATCH".equals(method) && path.equals("/api/v1/me"))
+                || ("GET".equals(method) && path.equals("/api/v1/reference-data"))
+                || ("POST".equals(method) && path.equals("/api/v1/profile-images"))) {
+            return Permission.MANAGE_OWN_PROFILE;
+        }
         if ("PATCH".equals(method) && (path.equals("/api/v1/me/password") || path.equals("/api/v1/me/login-id"))) {
             return Permission.MANAGE_CREDENTIALS;
         }
