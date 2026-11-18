@@ -145,6 +145,9 @@ public class AdminFeatureController {
                        case when oh.id is not null then ot.generation end as generation,
                        case when oh.id is not null then ot.phase end as phase,
                        orole.name as officer_role_name,
+                       case when oh.id is not null then exists (
+                           select 1 from officer_history_approvals a where a.officer_history_id = oh.id
+                       ) end as officer_approved,
                        pr.status as payment_status
                 from users u
                 left join majors m on m.id = u.major_id
