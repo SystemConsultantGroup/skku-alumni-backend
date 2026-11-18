@@ -3,11 +3,13 @@ package com.scg.alumni.api.operations;
 import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
 
 @RestController
 @RequestMapping("/api/v1/admin/officer-directory")
@@ -17,7 +19,11 @@ public class AdminOfficerDirectoryController {
 
     @GetMapping
     public Map<String, Object> list(@RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String kind,
             @RequestParam(defaultValue = "0") int page, @RequestParam(defaultValue = "20") int size) {
+        if (kind != null && !kind.equals("CENTRAL") && !kind.equals("UNIT")) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "중앙 임원 또는 단위동문회를 선택해 주세요.");
+        }
         int limit = Math.max(1, Math.min(size, 100));
         int safePage = Math.max(0, Math.min(page, 100000));
         String filter = keyword == null || keyword.isBlank() ? null : "%" + keyword.trim().toLowerCase(java.util.Locale.ROOT) + "%";
@@ -46,11 +52,12 @@ public class AdminOfficerDirectoryController {
                   from alumni_organization_officers h join users u on u.id = h.user_id
                   join alumni_organizations o on o.id = h.organization_id
                 ) directory
-                where (? is null or lower(coalesce(name, '')) like ? or lower(coalesce(student_id, '')) like ?
-                       or lower(coalesce(organization_name, '')) like ?)
+                where (? is null or kind = ?)
+                  and (? is null or lower(coalesce(name, '')) like ? or lower(coalesce(student_id, '')) like ?
+                       or lower(coalesce(organization_name, '')) like ? or lower(title) like ?)
                 order by priority, started_at desc, record_type, record_id desc
                 limit ? offset ?
-                """, JdbcResponseMapper.INSTANCE, filter, filter, filter, filter, limit + 1, (long) safePage * limit);
+                """, JdbcResponseMapper.INSTANCE, kind, kind, filter, filter, filter, filter, filter, limit + 1, (long) safePage * limit);
         boolean hasNext = rows.size() > limit;
         return Map.of("items", hasNext ? rows.subList(0, limit) : rows, "page", safePage, "hasNext", hasNext);
     }
