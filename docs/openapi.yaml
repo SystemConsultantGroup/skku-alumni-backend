@@ -894,6 +894,47 @@ paths:
           format: int64
       operationId: patch_api_v1_admin_payments_id_status
   /api/v1/admin/members/excel:
+    get:
+      summary: 임원 명단 엑셀 내보내기
+      security:
+      - bearerAuth: []
+      - adminCookie: []
+      parameters:
+      - name: keyword
+        in: query
+        schema:
+          type: string
+      - name: memberStatus
+        in: query
+        schema:
+          type: string
+      - name: includePhotos
+        in: query
+        schema:
+          type: boolean
+          default: false
+      - name: officerTermId
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int64
+        description: 조회할 총동창회 임기 ID. 생략하면 현행 임기를 사용합니다.
+      - name: officersOnly
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+        description: 선택된 임기의 임원 이력이 있는 사람만 포함합니다. 임기 ID를 지정하면 항상 적용됩니다.
+      responses:
+        '200':
+          description: 엑셀 파일
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
     post:
       summary: 회원 Excel 업로드
       security:
@@ -1580,6 +1621,17 @@ paths:
                           type: string
                           format: date-time
                           nullable: true
+                        known_ended_at:
+                          type: string
+                          format: date
+                          nullable: true
+                          description: 입력한 종료일. 종료 처리 시각과 별개입니다.
+                        created_at:
+                          type: string
+                          format: date-time
+                        updated_at:
+                          type: string
+                          format: date-time
                   nextCursor:
                     type: integer
                     format: int64
@@ -1655,6 +1707,61 @@ paths:
       security:
       - bearerAuth: []
       - adminCookie: []
+  /api/v1/admin/alumni-organizations/{id}/officers/{officerId}/replace:
+    post:
+      summary: 단위동문회 회원 직책 변경
+      security:
+      - bearerAuth: []
+      - adminCookie: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+      - name: officerId
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  maxLength: 255
+                  description: 회장으로 지정하면 회장으로 저장합니다. 다른 직책이면 필수입니다.
+                president:
+                  type: boolean
+                  default: false
+                startedAt:
+                  type: string
+                  format: date
+                  nullable: true
+                endedAt:
+                  type: string
+                  format: date
+                  nullable: true
+      responses:
+        '200':
+          description: 기존 이력 종료 및 새 이력 등록
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                    format: int64
+                  previousId:
+                    type: integer
+                    format: int64
   /api/v1/admin/alumni-organizations/{id}/officers/{officerId}/expire:
     post:
       operationId: AdminAlumniOrganizationController_expire_7512375
@@ -4326,6 +4433,20 @@ paths:
         required: false
         schema:
           type: integer
+      - name: officerTermId
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int64
+        description: 조회할 총동창회 임기 ID. 생략하면 현행 임기를 사용합니다.
+      - name: officersOnly
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+        description: 선택된 임기의 임원 이력이 있는 사람만 포함합니다. 임기 ID를 지정하면 항상 적용됩니다.
       responses:
         '200':
           description: 성공
@@ -4438,6 +4559,20 @@ paths:
         required: false
         schema:
           type: string
+      - name: officerTermId
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int64
+        description: 조회할 총동창회 임기 ID. 생략하면 현행 임기를 사용합니다.
+      - name: officersOnly
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+        description: 선택된 임기의 임원 이력이 있는 사람만 포함합니다. 임기 ID를 지정하면 항상 적용됩니다.
       responses:
         '200':
           description: ZIP 파일
@@ -12848,19 +12983,20 @@ components:
           type: integer
         title:
           type: string
-          minLength: 1
           maxLength: 255
+          description: 회장으로 지정하면 회장으로 저장합니다. 다른 직책이면 필수입니다.
         president:
           type: boolean
         startedAt:
           format: date
           type: string
+          nullable: true
         endedAt:
           format: date
           type: string
+          nullable: true
       required:
       - userId
-      - title
     com_scg_alumni_api_operations_AdminAlumniOrganizationController_OrganizationRequest:
       type: object
       properties:
