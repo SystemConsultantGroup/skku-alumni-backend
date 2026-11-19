@@ -212,11 +212,13 @@ public class AdminMemberExcelController {
     public ResponseEntity<byte[]> download(
             @RequestParam(required = false) String keyword,
             @RequestParam(required = false) String memberStatus,
+            @RequestParam(required = false) Long officerTermId,
+            @RequestParam(defaultValue = "false") boolean officersOnly,
             @RequestParam(required = false, defaultValue = "false") boolean includePhotos) throws IOException {
         String like = StringUtils.hasText(keyword) ? "%" + keyword.trim().toLowerCase(Locale.ROOT) + "%" : null;
         String status = normalizeOptionalStatus(memberStatus);
         // 내려받은 파일을 그대로 고쳐 다시 올릴 수 있어야 해서 업로드 양식과 같은 칸을 담는다.
-        // 임원 직책은 현행 임기 기준이다. 지난 임기 이력까지 담으면 한 줄에 여러 값이 생긴다.
+        // 한 사람당 선택된 임기의 직책 하나를 내보낸다.
         List<Map<String, Object>> members = jdbcTemplate.queryForList("""
                 select u.student_id, u.name, u.kingo_id, m.name as major_name,
                        u.admission_year, u.graduation_year, u.birth_date, u.gender,
@@ -228,15 +230,17 @@ public class AdminMemberExcelController {
                 from users u
                 join majors m on m.id = u.major_id
                 left join companies co on co.id = u.company_id and co.deleted_at is null
-                left join officer_terms ot on ot.started_at <= CURRENT_DATE and ot.ended_at >= CURRENT_DATE
+                left join officer_terms ot on ((? is null and ot.started_at <= CURRENT_DATE and ot.ended_at >= CURRENT_DATE)
+                                              or ot.id = ?)
                 left join officer_histories oh on oh.user_id = u.id and oh.officer_term_id = ot.id
                     and oh.deleted_at is null
                 left join officer_roles orole on orole.id = oh.officer_role_id
                 where u.deleted_at is null
+                  and (? = false or oh.id is not null)
                   and (? is null or lower(u.name) like ? or lower(m.name) like ? or lower(coalesce(co.name, '')) like ?)
                   and (? is null or u.status = ?)
                 order by u.id
-                """, like, like, like, like, status, status);
+                """, officerTermId, officerTermId, officersOnly || officerTermId != null, like, like, like, like, status, status);
 
         try (XSSFWorkbook workbook = new XSSFWorkbook(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             Sheet sheet = workbook.createSheet("회원 목록");
@@ -291,7 +295,9 @@ public class AdminMemberExcelController {
     @GetMapping("/photos")
     public ResponseEntity<byte[]> downloadPhotos(
             @RequestParam(required = false) String keyword,
-            @RequestParam(required = false) String memberStatus) throws IOException {
+            @RequestParam(required = false) String memberStatus,
+            @RequestParam(required = false) Long officerTermId,
+            @RequestParam(defaultValue = "false") boolean officersOnly) throws IOException {
         String like = StringUtils.hasText(keyword) ? "%" + keyword.trim().toLowerCase(Locale.ROOT) + "%" : null;
         String status = normalizeOptionalStatus(memberStatus);
         List<Map<String, Object>> members = jdbcTemplate.queryForList("""
@@ -299,12 +305,17 @@ public class AdminMemberExcelController {
                 from users u
                 join majors m on m.id = u.major_id
                 left join companies co on co.id = u.company_id and co.deleted_at is null
+                left join officer_terms ot on ((? is null and ot.started_at <= CURRENT_DATE and ot.ended_at >= CURRENT_DATE)
+                                              or ot.id = ?)
+                left join officer_histories oh on oh.user_id = u.id and oh.officer_term_id = ot.id
+                    and oh.deleted_at is null
                 where u.deleted_at is null
+                  and (? = false or oh.id is not null)
                   and u.profile_image_url is not null
                   and (? is null or lower(u.name) like ? or lower(m.name) like ? or lower(coalesce(co.name, '')) like ?)
                   and (? is null or u.status = ?)
                 order by u.id
-                """, like, like, like, like, status, status);
+                """, officerTermId, officerTermId, officersOnly || officerTermId != null, like, like, like, like, status, status);
 
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (java.util.zip.ZipOutputStream zip = new java.util.zip.ZipOutputStream(output)) {
