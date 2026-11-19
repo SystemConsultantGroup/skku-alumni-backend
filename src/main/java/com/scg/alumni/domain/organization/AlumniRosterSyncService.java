@@ -1,5 +1,6 @@
 package com.scg.alumni.domain.organization;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -121,10 +122,10 @@ public class AlumniRosterSyncService {
                 Current existing = currentByKey.get(key);
                 jdbc.update("""
                         update alumni_organization_officers
-                        set known_started_at = coalesce(?, known_started_at), effective_started_at = coalesce(?, effective_started_at),
+                        set title = ?, known_started_at = coalesce(?, known_started_at), effective_started_at = coalesce(?, effective_started_at),
                             ended_at = coalesce(?, ended_at), scheduled_ended_at = coalesce(?, scheduled_ended_at),
                             updated_at = CURRENT_TIMESTAMP where id = ?
-                        """, entry.startedAt(), entry.startedAt(), entry.endedAt(), entry.endedAt(), existing.id());
+                        """, entry.title(), entry.startedAt(), entry.startedAt(), entry.endedAt(), entry.endedAt(), existing.id());
                 organizations.touchRoster(organizationId);
                 if (existing.president()) invalidation.afterCommit(existing.userId());
             }
@@ -143,8 +144,7 @@ public class AlumniRosterSyncService {
         LocalDate today = LocalDate.now(SEOUL);
         LocalDate start = entry.startedAt() != null ? entry.startedAt() : existing == null ? null : existing.startedAt();
         LocalDate end = entry.endedAt() != null ? entry.endedAt() : existing == null ? null : existing.endedAt();
-        if ((start != null && start.isAfter(today)) || (start != null && end != null && end.isBefore(start))
-                || (start == null && end != null && end.isBefore(today))) {
+        if (start != null && (start.isAfter(today) || (end != null && end.isBefore(start)))) {
             throw conflict(entry.row() + "행: 임기 날짜를 확인하세요.");
         }
     }
@@ -171,18 +171,18 @@ public class AlumniRosterSyncService {
     private List<Current> current(long organizationId) {
         LocalDate today = LocalDate.now(SEOUL);
         return jdbc.query("""
-                select id, user_id, title, president, effective_started_at, ended_at
+                select id, user_id, title, president, known_started_at, ended_at, effective_started_at
                 from alumni_organization_officers where organization_id = ? and ended_at_recorded_at is null
                   and (ended_at is null or ended_at >= ?) order by id
                 """, (rs, row) -> new Current(rs.getLong("id"), rs.getLong("user_id"), rs.getString("title"),
-                rs.getBoolean("president"), rs.getObject("effective_started_at", LocalDate.class),
-                rs.getObject("ended_at", LocalDate.class)), organizationId, today);
+                rs.getBoolean("president"), rs.getObject("known_started_at", LocalDate.class),
+                rs.getObject("ended_at", LocalDate.class), rs.getObject("effective_started_at", LocalDate.class)), organizationId, today);
     }
 
     private String rosterHash(List<Current> items) {
         return hashJson(items.stream().map(item -> new HashableCurrent(
                 item.id(), item.userId(), item.title(), item.president(),
-                item.startedAt() == null ? null : item.startedAt().toString(),
+                item.effectiveStartedAt().toString(),
                 item.endedAt() == null ? null : item.endedAt().toString())).toList());
     }
     private String previewToken(String fileHash, String rosterHash, List<RowPreview> rows) {
@@ -204,8 +204,9 @@ public class AlumniRosterSyncService {
     }
     private ResponseStatusException conflict(String message) { return new ResponseStatusException(HttpStatus.CONFLICT, message); }
     public record Key(long userId, String title, boolean president) { }
-    public record Current(long id, long userId, String title, boolean president, LocalDate startedAt, LocalDate endedAt) {
-        Key key() { return new Key(userId, title, president); }
+    public record Current(long id, long userId, String title, boolean president, LocalDate startedAt, LocalDate endedAt,
+                          @JsonIgnore LocalDate effectiveStartedAt) {
+        Key key() { return new Key(userId, president ? AlumniOrganizationService.normalizeTitle(title, true) : title, president); }
     }
     private record HashableCurrent(long id, long userId, String title, boolean president, String startedAt, String endedAt) { }
     private record Resolved(long userId, AlumniRosterWorkbook.Entry entry) { }
