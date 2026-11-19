@@ -120,6 +120,8 @@ public class AdminFeatureController {
             @RequestParam(required = false) String paymentStatus,
             @RequestParam(required = false) String memberStatus,
             @RequestParam(required = false) Long officerRoleId,
+            @RequestParam(required = false) Long officerTermId,
+            @RequestParam(defaultValue = "false") boolean officersOnly,
             @RequestParam(required = false) Boolean includeDeleted,
             @RequestParam(required = false) Boolean accountUnregistered,
             @RequestParam(required = false) Integer page,
@@ -152,11 +154,13 @@ public class AdminFeatureController {
                 from users u
                 left join majors m on m.id = u.major_id
                 left join companies co on co.id = u.company_id and co.deleted_at is null
-                left join officer_terms ot on ot.started_at <= CURRENT_DATE and ot.ended_at >= CURRENT_DATE
+                left join officer_terms ot on ((? is null and ot.started_at <= CURRENT_DATE and ot.ended_at >= CURRENT_DATE)
+                                              or ot.id = ?)
                 left join officer_histories oh on oh.user_id = u.id and oh.officer_term_id = ot.id and oh.deleted_at is null
                 left join officer_roles orole on orole.id = oh.officer_role_id
                 left join payment_records pr on pr.user_id = u.id and pr.officer_term_id = ot.id and pr.deleted_at is null
                 where (? = true or u.deleted_at is null)
+                  and (? = false or oh.id is not null)
                   and (? is null or lower(u.name) like ? or lower(m.name) like ? or lower(coalesce(co.name, '')) like ?)
                   and (? is null or pr.status = ?)
                   and (? is null or u.status = ? or (? = true and __ELIGIBILITY__))
@@ -164,7 +168,8 @@ public class AdminFeatureController {
                   and (? = false or u.login_id is null or u.login_id = ''
                        or u.password is null or u.password = '')
                 """.replace("__ELIGIBILITY__", com.scg.alumni.domain.access.AccessEligibilitySql.forUser("u", termPolicy.accessGraceDays())), "order by u.id desc", AdminPaging.args(
-                showDeleted,
+                officerTermId, officerTermId,
+                showDeleted, officersOnly || officerTermId != null,
                 normalizedKeyword, normalizedKeyword, normalizedKeyword, normalizedKeyword,
                 normalizedPaymentStatus, normalizedPaymentStatus,
                 normalizedMemberStatus, normalizedMemberStatus, "ELIGIBLE".equals(normalizedMemberStatus),
