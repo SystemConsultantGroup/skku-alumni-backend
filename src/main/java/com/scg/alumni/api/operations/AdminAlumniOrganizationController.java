@@ -81,12 +81,14 @@ public class AdminAlumniOrganizationController {
     @Transactional
     public Map<String, Object> replaceOfficer(@PathVariable long id, @PathVariable long officerId,
             @Valid @RequestBody ReplaceOfficerRequest request) {
-        long replacementId = organizations.replaceOfficer(id, officerId, request.title(), request.president(), request.endedAt());
+        long replacementId = organizations.replaceOfficer(id, officerId, request.title(), request.president(),
+                request.startedAt(), request.endedAt());
         audit.record("REPLACE_ALUMNI_OFFICER", "alumni_organization_officer", officerId);
         return Map.of("id", replacementId, "previousId", officerId);
     }
 
-    public record ReplaceOfficerRequest(@NotBlank @Size(max = 255) String title, boolean president, LocalDate endedAt) { }
+    public record ReplaceOfficerRequest(@Size(max = 255) String title, boolean president,
+            LocalDate startedAt, LocalDate endedAt) { }
 
     @PostMapping("/{id}/dissolve")
     @Transactional
@@ -97,6 +99,6 @@ public class AdminAlumniOrganizationController {
     }
 
     public record OrganizationRequest(@NotBlank @Size(max = 255) String name, @Size(max = 1000) String description) { }
-    public record OfficerRequest(@NotNull Long userId, @NotBlank @Size(max = 255) String title,
+    public record OfficerRequest(@NotNull Long userId, @Size(max = 255) String title,
             boolean president, LocalDate startedAt, LocalDate endedAt) { }
 }

@@ -4,17 +4,14 @@ import com.scg.alumni.domain.organization.AdministrativePersonService;
 import com.scg.alumni.domain.organization.AlumniOrganizationService;
 import com.scg.alumni.domain.organization.VipQualificationService;
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import java.time.LocalDate;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
-import org.springframework.http.HttpStatus;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
-import org.springframework.web.server.ResponseStatusException;
 
 @RestController
 @RequestMapping("/api/v1/admin")
@@ -35,9 +32,6 @@ public class AdminPersonEnrollmentController {
     @Transactional
     public Map<String, Object> enrollOfficer(@PathVariable long id, @Valid @RequestBody Enrollment request) {
         long userId = resolvePerson(request);
-        if (request.title() == null || request.title().isBlank()) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Title is required");
-        }
         long appointmentId = organizations.addOfficer(id, userId, request.title(), request.president(),
                 request.startedAt(), request.endedAt());
         audit.record("ENROLL_ALUMNI_OFFICER", "alumni_organization_officer", appointmentId);
