@@ -131,7 +131,8 @@ public class CombinedRosterService {
                         update alumni_organization_officers set title = ?, president = ?, known_started_at = ?, effective_started_at = ?,
                           scheduled_ended_at = ?, ended_at = ?, ended_at_recorded_at = ?, updated_at = CURRENT_TIMESTAMP
                         where id = ? and organization_id = ? and user_id = ?
-                        """, row.title(), row.president(), date(row.knownStart()), date(row.effectiveStart()), date(row.scheduledEnd()),
+                        """, row.president() ? AlumniOrganizationService.normalizeTitle(row.title(), true) : row.title(),
+                        row.president(), date(row.knownStart()), date(row.effectiveStart()), date(row.scheduledEnd()),
                         date(row.end()), timestamp(row.recordedEnd()), row.id(), item.organizationId(), row.userId());
             }
             organizations.touchRoster(item.organizationId());

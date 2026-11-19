@@ -46,10 +46,11 @@ public final class AlumniRosterWorkbook {
                 for (int col = 0; col < HEADERS.size(); col++) fields.add(text(row, col, format));
                 if (fields.stream().allMatch(String::isBlank)) continue;
                 String name = fields.get(1), title = fields.get(2), marker = fields.get(3).toUpperCase(Locale.ROOT);
-                if (name.isBlank() || title.isBlank()) throw bad((index + 1) + "행: 이름과 직책이 필요합니다.");
+                if (name.isBlank()) throw bad((index + 1) + "행: 이름이 필요합니다.");
                 if (!Set.of("Y", "N").contains(marker)) throw bad((index + 1) + "행: 회장은 Y 또는 N으로 입력하세요.");
                 boolean president = "Y".equals(marker);
-                if (title.equals("회장") && !president) throw bad((index + 1) + "행: 회장 표시를 확인하세요.");
+                try { title = AlumniOrganizationService.normalizeTitle(title, president); }
+                catch (ResponseStatusException ex) { throw bad((index + 1) + "행: " + ex.getReason()); }
                 if (president && ++presidents > 1) throw bad("현직 회장은 한 명만 등록할 수 있습니다.");
                 Long userId = null;
                 if (!fields.get(0).isBlank()) {
