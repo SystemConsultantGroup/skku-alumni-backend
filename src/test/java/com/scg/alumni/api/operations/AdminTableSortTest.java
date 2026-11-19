@@ -151,8 +151,8 @@ class AdminTableSortTest {
     void everyPagedTableAnswersWithAndWithoutFilters() {
         var c = adminFeatureController;
         List<com.scg.alumni.api.common.PageResponse<Map<String, Object>>> pages = List.of(
-                c.findMembers(null, null, null, null, null, null, 1, 10),
-                c.findMembers("김", "PAID", "ACTIVE", 1L, true, true, 1, 10),
+                c.findMembers(null, null, null, null, null, false, null, null, 1, 10),
+                c.findMembers("김", "PAID", "ACTIVE", 1L, null, false, true, true, 1, 10),
                 c.findApplications(null, null, 1, 10),
                 c.findApplications("김", "PENDING", 1, 10),
                 c.findAsisSyncTargets(null, null, null, 1, 10),

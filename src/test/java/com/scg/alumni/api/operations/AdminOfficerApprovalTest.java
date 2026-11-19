@@ -68,7 +68,7 @@ class AdminOfficerApprovalTest {
         controller.updatePaymentStatus(paymentId, new AdminFeatureController.StatusUpdateRequest("PAID"));
         assertThat(access.currentLevel(userId)).isEqualTo(AccessLevel.FULL);
 
-        var memberList = controller.findMembers("Fictional Applicant", "PAID", null, null, false, false, 1, 20);
+        var memberList = controller.findMembers("Fictional Applicant", "PAID", null, null, null, false, false, false, 1, 20);
         assertThat(memberList.items()).singleElement().satisfies(row -> {
             assertThat(row.get("status")).isEqualTo("PENDING");
             assertThat(row.get("officerApproved")).isEqualTo(true);
@@ -78,8 +78,35 @@ class AdminOfficerApprovalTest {
 
     @Test
     void paymentMemberSearchExcludesUnapprovedPendingAccounts() {
-        var page = controller.findMembers(null, null, "ELIGIBLE", null, false, false, 1, 50);
+        var page = controller.findMembers(null, null, "ELIGIBLE", null, null, false, false, false, 1, 50);
         assertThat(page.items()).extracting(row -> ((Number) row.get("id")).longValue()).contains(1L).doesNotContain(5L);
+    }
+
+    @Test
+    void managedOfficerRosterShowsOnlyOfficersForTheSelectedTerm() {
+        long formerOfficer = people.create("Fictional Past Officer", "PAST-OFFICER-TEST", null, true);
+        long termId = 1000L;
+        jdbc.update("""
+                insert into officer_terms (id, generation, phase, started_at, ended_at, current_term)
+                values (?, 99, 9, '1999-01-01', '1999-12-31', false)
+                """, termId);
+        jdbc.update("""
+                insert into officer_histories (user_id, officer_term_id, officer_role_id, started_at, ended_at)
+                values (?, ?, 2, '1999-01-01', '1999-12-31')
+                """, formerOfficer, termId);
+        jdbc.update("""
+                insert into payment_records (user_id, officer_term_id, amount, status)
+                values (?, ?, 10000, 'PAID')
+                """, formerOfficer, termId);
+
+        assertThat(controller.findMembers("Fictional Past Officer", null, null, null, null, true, false, false, 1, 20).items()).isEmpty();
+        assertThat(controller.findMembers(null, null, null, null, termId, true, false, false, 1, 20).items())
+                .singleElement().satisfies(row -> {
+                    assertThat(((Number) row.get("id")).longValue()).isEqualTo(formerOfficer);
+                    assertThat(row.get("generation")).isEqualTo(99);
+                    assertThat(row.get("phase")).isEqualTo(9);
+                    assertThat(row.get("paymentStatus")).isEqualTo("PAID");
+                });
     }
 
     @Test
