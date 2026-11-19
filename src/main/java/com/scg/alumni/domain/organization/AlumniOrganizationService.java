@@ -17,6 +17,7 @@ import org.springframework.web.server.ResponseStatusException;
 @Service
 @RequiredArgsConstructor
 public class AlumniOrganizationService {
+    private static final String PRESIDENT_TITLE = "회장";
     private static final ZoneId SEOUL = ZoneId.of("Asia/Seoul");
     private final JdbcTemplate jdbc;
     private final com.scg.alumni.domain.access.AccessCacheInvalidation invalidation;
@@ -53,7 +54,7 @@ public class AlumniOrganizationService {
             throw error(HttpStatus.BAD_REQUEST, "Future appointments are not supported");
         }
         LocalDate effectiveStart = knownStart == null ? today : knownStart;
-        if (end != null && (end.isBefore(effectiveStart) || (end.isBefore(today) && knownStart == null))) {
+        if (knownStart != null && end != null && end.isBefore(knownStart)) {
             throw error(HttpStatus.BAD_REQUEST, "Invalid appointment dates");
         }
         Integer users = jdbc.queryForObject("select count(*) from users where id = ? and deleted_at is null", Integer.class, userId);
@@ -66,6 +67,7 @@ public class AlumniOrganizationService {
                     """, Integer.class, organizationId, today);
             if (count != null && count > 0) throw error(HttpStatus.CONFLICT, "A current president already exists");
         }
+        String normalizedTitle = normalizeTitle(title, president);
         KeyHolder key = new GeneratedKeyHolder();
         jdbc.update(connection -> {
             PreparedStatement statement = connection.prepareStatement("""
@@ -75,7 +77,7 @@ public class AlumniOrganizationService {
                     """, new String[]{"id"});
             statement.setLong(1, organizationId);
             statement.setLong(2, userId);
-            statement.setString(3, title.trim());
+            statement.setString(3, normalizedTitle);
             statement.setBoolean(4, president);
             statement.setObject(5, knownStart);
             statement.setObject(6, effectiveStart);
@@ -108,7 +110,8 @@ public class AlumniOrganizationService {
 
     /** 기존 위촉을 종료하고 같은 회원의 새 위촉을 원자적으로 생성한다. */
     @Transactional
-    public long replaceOfficer(long organizationId, long officerId, String title, boolean president, LocalDate endedAt) {
+    public long replaceOfficer(long organizationId, long officerId, String title, boolean president,
+            LocalDate startedAt, LocalDate endedAt) {
         lockActiveOrganization(organizationId);
         List<Long> users = jdbc.queryForList("""
                 select user_id from alumni_organization_officers where id = ? and organization_id = ?
@@ -116,7 +119,7 @@ public class AlumniOrganizationService {
                 """, Long.class, officerId, organizationId, LocalDate.now(SEOUL));
         if (users.isEmpty()) throw error(HttpStatus.NOT_FOUND, "Current appointment not found");
         expire(organizationId, officerId);
-        return addOfficer(organizationId, users.getFirst(), title, president, LocalDate.now(SEOUL), endedAt);
+        return addOfficer(organizationId, users.getFirst(), title, president, startedAt, endedAt);
     }
 
     @Transactional
@@ -150,8 +153,13 @@ public class AlumniOrganizationService {
         int limit = Math.max(1, Math.min(size, 100));
         LocalDate today = LocalDate.now(SEOUL);
         return jdbc.queryForList("""
-                select h.id, h.user_id, u.name, u.student_id, h.title, h.president, h.known_started_at,
-                       h.effective_started_at, h.scheduled_ended_at, h.ended_at, h.ended_at_recorded_at
+                select h.id, h.user_id, u.name, u.student_id,
+                       case when h.president = true then '회장' else h.title end as title,
+                       h.president, h.known_started_at,
+                       h.effective_started_at, h.scheduled_ended_at, h.ended_at, h.ended_at_recorded_at,
+                       coalesce(h.scheduled_ended_at, case when h.ended_at_recorded_at is null then h.ended_at end)
+                           as known_ended_at,
+                       h.created_at, h.updated_at
                 from alumni_organization_officers h join users u on u.id = h.user_id
                 where h.organization_id = ? and (? is null or h.id < ?)
                 and ((? = true and h.ended_at_recorded_at is null and (h.ended_at is null or h.ended_at >= ?))
@@ -170,6 +178,14 @@ public class AlumniOrganizationService {
     @Transactional
     public void touchRoster(long id) {
         jdbc.update("update alumni_organizations set roster_revision = roster_revision + 1, updated_at = CURRENT_TIMESTAMP where id = ?", id);
+    }
+
+    static String normalizeTitle(String title, boolean president) {
+        if (president) return PRESIDENT_TITLE;
+        if (title == null || title.isBlank()) throw error(HttpStatus.BAD_REQUEST, "직책명을 입력해 주세요.");
+        String trimmed = title.trim();
+        if (PRESIDENT_TITLE.equals(trimmed)) throw error(HttpStatus.BAD_REQUEST, "회장 등록에는 회장 표시가 필요합니다.");
+        return trimmed;
     }
 
     private void lockOrganizationNames() {
